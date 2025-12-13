@@ -183,16 +183,19 @@ class PairedImageDataModule:
         batch_size: int = 8,
         val_split: float = 0.1,
         num_workers: int = 4,
-        pin_memory: bool = True,
+        pin_memory: bool = None,  # Auto-detect based on CUDA availability
         seed: int = 42,
+        max_samples: int = None,
     ):
         self.root_dir = root_dir
         self.image_size = image_size
         self.batch_size = batch_size
         self.val_split = val_split
         self.num_workers = num_workers
-        self.pin_memory = pin_memory
+        # pin_memory only helps with CUDA, causes warnings on MPS
+        self.pin_memory = pin_memory if pin_memory is not None else torch.cuda.is_available()
         self.seed = seed
+        self.max_samples = max_samples
 
         # Create datasets
         self._setup()
@@ -205,8 +208,13 @@ class PairedImageDataModule:
             augment=True,
         )
 
-        # Split into train and val
+        # Limit dataset size if max_samples is set (for quick testing)
         total_size = len(full_dataset)
+        if self.max_samples is not None and self.max_samples < total_size:
+            logger.info(f"Limiting dataset from {total_size} to {self.max_samples} samples")
+            indices = list(range(self.max_samples))
+            full_dataset = torch.utils.data.Subset(full_dataset, indices)
+            total_size = self.max_samples
         val_size = int(total_size * self.val_split)
         train_size = total_size - val_size
 
@@ -260,6 +268,7 @@ def get_dataloaders(
     batch_size: int = 8,
     val_split: float = 0.1,
     num_workers: int = 16,
+    max_samples: int = None,
 ) -> Tuple[DataLoader, DataLoader]:
     """
     Convenience function to get train and val dataloaders.
@@ -270,6 +279,7 @@ def get_dataloaders(
         batch_size: Batch size
         val_split: Fraction for validation
         num_workers: Number of data loading workers
+        max_samples: Limit total samples (for quick testing)
 
     Returns:
         (train_dataloader, val_dataloader)
@@ -280,5 +290,6 @@ def get_dataloaders(
         batch_size=batch_size,
         val_split=val_split,
         num_workers=num_workers,
+        max_samples=max_samples,
     )
     return data_module.train_dataloader(), data_module.val_dataloader()

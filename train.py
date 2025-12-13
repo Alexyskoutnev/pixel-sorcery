@@ -60,7 +60,7 @@ def parse_args():
     parser.add_argument(
         "--model",
         type=str,
-        default="unet",
+        default="unet_small",
         choices=list(MODEL_REGISTRY.keys()),
         help="Model architecture to use",
     )
@@ -91,7 +91,7 @@ def parse_args():
     parser.add_argument(
         "--epochs",
         type=int,
-        default=100,
+        default=1,
         help="Number of training epochs",
     )
     parser.add_argument(
@@ -105,6 +105,12 @@ def parse_args():
         type=float,
         default=0.1,
         help="Fraction of data to use for validation",
+    )
+    parser.add_argument(
+        "--max_samples",
+        type=int,
+        default=None,
+        help="Limit dataset size (for quick testing)",
     )
 
     parser.add_argument(
@@ -192,6 +198,7 @@ def main():
         batch_size=args.batch_size,
         val_split=args.val_split,
         num_workers=args.num_workers,
+        max_samples=args.max_samples,
     )
 
     logger.info(f"Creating model: {args.model}")
@@ -260,15 +267,7 @@ def main():
     logger.info(f"Best validation loss: {trainer.best_val_loss:.6f}")
     logger.info(f"Checkpoints saved to: {args.checkpoint_dir}/")
     logger.info(f"Best model: {args.checkpoint_dir}/best_model.pt")
-
-    # Show evaluation samples
-    eval_save_path = f"{args.checkpoint_dir}/eval_samples.png"
-    trainer.visualize_samples(
-        num_samples=4,
-        save_path=eval_save_path,
-        show=True,
-    )
-    logger.info(f"Evaluation samples saved to: {eval_save_path}")
+    logger.info(f"Eval samples saved alongside each checkpoint (*_eval.png)")
 
 
 if __name__ == "__main__":

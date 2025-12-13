@@ -414,8 +414,8 @@ class Trainer:
         msg += f", lr={lr:.2e}"
         logger.info(msg)
 
-    def _save_checkpoint(self, filename: str):
-        """Save a checkpoint."""
+    def _save_checkpoint(self, filename: str, save_eval: bool = True):
+        """Save a checkpoint and optionally evaluation samples."""
         path = self.checkpoint_dir / filename
         torch.save({
             "epoch": self.current_epoch,
@@ -427,6 +427,12 @@ class Trainer:
             "history": self.history,
             "model_config": self.model.get_config(),
         }, path)
+
+        # Save evaluation samples alongside checkpoint
+        if save_eval and self.val_loader is not None:
+            eval_filename = filename.replace(".pt", "_eval.png")
+            eval_path = str(self.checkpoint_dir / eval_filename)
+            self.visualize_samples(num_samples=4, save_path=eval_path, show=False)
 
     def load_checkpoint(self, path: str):
         """Load a checkpoint."""
@@ -471,7 +477,7 @@ class Trainer:
         self,
         num_samples: int = 4,
         save_path: Optional[str] = None,
-        show: bool = True,
+        show: bool = False,
     ) -> None:
         """
         Create a matplotlib dashboard showing input → output → target comparisons.
@@ -495,10 +501,18 @@ class Trainer:
 
         # Get a batch from validation set
         batch = next(iter(self.val_loader))
+
+        # Limit num_samples to what's actually available in the batch
+        available_samples = batch["input"].shape[0]
+        num_samples = min(num_samples, available_samples)
+
+        if num_samples == 0:
+            logger.warning("No samples available for visualization")
+            return
+
         inputs = batch["input"][:num_samples].to(self.device)
         targets = batch["target"][:num_samples]
 
-        # Run inference
         with torch.no_grad():
             outputs = self.model(inputs).cpu()
 

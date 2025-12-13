@@ -208,3 +208,9 @@ __marimo__/
 
 # Dataset
 autohdr-real-estate-577/
+
+# Model checkpoints and weights
+checkpoints/
+*.pt
+*.pth
+*.ckpt
