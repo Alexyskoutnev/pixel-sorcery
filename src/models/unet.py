@@ -48,9 +48,6 @@ import torch.nn.functional as F
 from .base import BaseModel
 
 
-# ==============================================================================
-# CONVBLOCK: The Fundamental Building Block
-# ==============================================================================
 
 class ConvBlock(nn.Module):
     """

@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "WebSearch"
+      "WebSearch",
+      "WebFetch(domain:discuss.pytorch.org)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }

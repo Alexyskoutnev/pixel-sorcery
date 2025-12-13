@@ -66,7 +66,7 @@ class TrainerConfig:
     device: str = "auto"  # "auto", "cuda", "mps", or "cpu"
 
     # Mixed precision
-    use_amp: bool = True  # Automatic mixed precision
+    use_amp: bool = False  # Disabled by default for Blackwell (sm_121) compatibility
 
 
 class Trainer:
