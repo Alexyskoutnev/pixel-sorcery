@@ -15,7 +15,7 @@
 # ============================================================
 
 name: NAFNet_RealEstate_Fast
-model_type: ImageCleanModel
+model_type: ImageRestorationModel
 scale: 1
 num_gpu: 1
 manual_seed: 42
@@ -27,18 +27,22 @@ datasets:
   train:
     name: RealEstate_Train
     type: PairedImageDataset
-    
-    # Paths to your prepared dataset
-    dataroot_gt: ../datasets/realestate/train/gt
-    dataroot_lq: ../datasets/realestate/train/lq
-    
+    phase: train
+
+    # Paths to your prepared dataset (absolute paths)
+    dataroot_gt: /home/asus/sebastian/pixel-sorcery/pix2pix-train-v1/datasets/realestate/train/gt
+    dataroot_lq: /home/asus/sebastian/pixel-sorcery/pix2pix-train-v1/datasets/realestate/train/lq
+
+    # Scale factor (1 = no upscaling, image enhancement only)
+    scale: 1
+
     # File handling
     filename_tmpl: '{}'
     io_backend:
       type: disk
     
-    # Patch size - 384 balances quality and speed
-    gt_size: 384
+    # Patch size - 256 for faster training
+    gt_size: 256
     
     # Augmentation - essential for 500 image dataset
     use_hflip: true                 # Horizontal flip (safe for real estate)
@@ -46,7 +50,7 @@ datasets:
     
     # DataLoader settings for GB10
     num_worker_per_gpu: 6
-    batch_size_per_gpu: 12          # GB10 can handle this at 384px
+    batch_size_per_gpu: 20          # Increased for faster training at 256px
     
     # CRITICAL for small datasets: repeat data many times per epoch
     dataset_enlarge_ratio: 50       # 500 images × 50 = 25000 per epoch
@@ -56,8 +60,10 @@ datasets:
   val:
     name: RealEstate_Val
     type: PairedImageDataset
-    dataroot_gt: ../datasets/realestate/val/gt
-    dataroot_lq: ../datasets/realestate/val/lq
+    phase: val
+    dataroot_gt: /home/asus/sebastian/pixel-sorcery/pix2pix-train-v1/datasets/realestate/val/gt
+    dataroot_lq: /home/asus/sebastian/pixel-sorcery/pix2pix-train-v1/datasets/realestate/val/lq
+    scale: 1
     io_backend:
       type: disk
 
@@ -76,11 +82,10 @@ network_g:
 # Path Configuration
 # ============================================================
 path:
-  # Uncomment to use pretrained weights (recommended!)
-  # pretrain_network_g: ../pretrained/NAFNet-SIDD-width32.pth
-  pretrain_network_g: ~
-  strict_load_g: true
-  resume_state: ~
+  # Using pretrained weights for transfer learning (recommended per whitepaper)
+  pretrain_network_g: /home/asus/sebastian/pixel-sorcery/pix2pix-train-v1/pretrained/NAFNet-SIDD-width32.pth
+  strict_load_g: true  # Architecture matches exactly (width=32)
+  resume_state: /home/asus/sebastian/pixel-sorcery/pix2pix-train-v1/BasicSR/experiments/NAFNet_RealEstate_Fast/training_states/4000.state
 
 # ============================================================
 # Training Configuration
@@ -96,15 +101,16 @@ train:
     weight_decay: !!float 1e-4      # Regularization
     betas: [0.9, 0.9]
   
-  # Learning rate schedule - cosine annealing
+  # Learning rate schedule - cosine annealing with restarts (per whitepaper)
   scheduler:
-    type: TrueCosineAnnealingLR
-    T_max: 30000                    # Match total_iter
+    type: CosineAnnealingRestartLR
+    periods: [12000]                # Match total_iter
+    restart_weights: [1]
     eta_min: !!float 1e-7           # Minimum LR
   
   # Total training iterations
-  total_iter: 30000                 # ~4-5 hours on GB10
-  warmup_iter: 500                  # Warmup for stability
+  total_iter: 12000                 # ~4-5 hours on GB10
+  warmup_iter: 200                  # Warmup for stability
   
   # --------------------------------------------------------
   # Loss Functions
@@ -117,6 +123,7 @@ train:
     reduction: mean
   
   # Perceptual Loss (secondary) - improves visual quality
+  # Per whitepaper: "Starting weights of λ_perc = 0.1 provide good results"
   perceptual_opt:
     type: PerceptualLoss
     layer_weights:
@@ -125,7 +132,7 @@ train:
       'conv5_4': 1.0
     vgg_type: vgg19
     use_input_norm: true
-    perceptual_weight: 0.5          # Balance with L1
+    perceptual_weight: 0.1          # Per whitepaper recommendation (0.01-0.5 range)
     style_weight: 0.0               # Disable style loss
     criterion: l1
 
@@ -133,7 +140,7 @@ train:
 # Validation Configuration
 # ============================================================
 val:
-  val_freq: !!float 3000            # Validate every 3000 iterations
+  val_freq: !!float 2000            # Validate every 2000 iterations
   save_img: true                    # Save sample outputs
   
   metrics:
@@ -152,7 +159,7 @@ val:
 # ============================================================
 logger:
   print_freq: 100                   # Print every 100 iterations
-  save_checkpoint_freq: !!float 5000  # Save model every 5000 iterations
+  save_checkpoint_freq: !!float 2000  # Save model every 2000 iterations
   use_tb_logger: true               # Enable TensorBoard
   wandb:
     project: ~                      # Set to enable W&B logging
