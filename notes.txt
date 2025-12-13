@@ -9,3 +9,13 @@ python train.py \
 
 
  pkill -9 -f "train.py"
+
+
+nohup python train.py \
+      --data_dir autohdr-real-estate-577/images \
+      --model unet \
+      --image_size 1024 \
+      --batch_size 16 \
+      --depth 5 \
+      --epochs 100 \
+      --l1_weight 2.0 > training.log 2>&1 &

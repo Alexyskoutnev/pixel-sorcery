@@ -20,6 +20,9 @@ Usage:
     # Use residual learning (recommended for enhancement tasks)
     python train.py --data_dir path/to/images --residual
 
+    # GAN training for sharper results
+    python train.py --data_dir path/to/images --loss gan --adv_weight 1.0
+
 Example with the hackathon data:
     python train.py \
         --data_dir autohdr-real-estate-577/images \
@@ -35,7 +38,7 @@ from pathlib import Path
 
 from src.models import get_model, MODEL_REGISTRY, ResidualWrapper
 from src.datasets import get_dataloaders
-from src.training import Trainer, TrainerConfig, CombinedLoss
+from src.training import Trainer, TrainerConfig, CombinedLoss, GANTrainer, GANTrainerConfig
 from src.utils import logger
 
 
@@ -43,7 +46,8 @@ def generate_run_name(args) -> str:
     """Generate a unique run name based on config and timestamp."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     # Format: model_imgsize_batchsize_timestamp
-    return f"{args.model}_{args.image_size}px_bs{args.batch_size}_{timestamp}"
+    prefix = "gan_" if args.loss == "gan" else ""
+    return f"{prefix}{args.model}_{args.image_size}px_bs{args.batch_size}_{timestamp}"
 
 
 def parse_args():
@@ -61,14 +65,14 @@ def parse_args():
     parser.add_argument(
         "--image_size",
         type=int,
-        default=512,
+        default=1024,
         help="Training image size (images will be resized)",
     )
 
     parser.add_argument(
         "--model",
         type=str,
-        default="unet_small",
+        default="unet",
         choices=list(MODEL_REGISTRY.keys()),
         help="Model architecture to use",
     )
@@ -81,7 +85,7 @@ def parse_args():
     parser.add_argument(
         "--depth",
         type=int,
-        default=4,
+        default=5,
         help="Number of encoder/decoder levels",
     )
     parser.add_argument(
@@ -93,7 +97,7 @@ def parse_args():
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=8,
+        default=16,
         help="Training batch size",
     )
     parser.add_argument(
@@ -111,7 +115,7 @@ def parse_args():
     parser.add_argument(
         "--val_split",
         type=float,
-        default=0.1,
+        default=0.2,
         help="Fraction of data to use for validation",
     )
     parser.add_argument(
@@ -125,13 +129,13 @@ def parse_args():
         "--loss",
         type=str,
         default="combined",
-        choices=["l1", "l2", "combined"],
-        help="Loss function type",
+        choices=["l1", "l2", "combined", "gan"],
+        help="Loss function type (gan adds adversarial training)",
     )
     parser.add_argument(
         "--l1_weight",
         type=float,
-        default=1.0,
+        default=2.0,
         help="Weight for L1 loss (if using combined)",
     )
     parser.add_argument(
@@ -145,6 +149,19 @@ def parse_args():
         type=float,
         default=0.1,
         help="Weight for SSIM loss (if using combined)",
+    )
+    parser.add_argument(
+        "--adv_weight",
+        type=float,
+        default=1.0,
+        help="Weight for adversarial loss (if using gan)",
+    )
+    parser.add_argument(
+        "--discriminator",
+        type=str,
+        default="patch",
+        choices=["patch", "patch_small", "patch_large", "multiscale"],
+        help="Discriminator type (if using gan)",
     )
 
     # Checkpointing
@@ -181,12 +198,6 @@ def parse_args():
         default=4,
         help="Number of data loading workers",
     )
-    parser.add_argument(
-        "--no_amp",
-        action="store_true",
-        help="Disable automatic mixed precision",
-    )
-
     return parser.parse_args()
 
 
@@ -224,47 +235,75 @@ def main():
         logger.info("Using residual learning (output = input + model(input))")
         model = ResidualWrapper(model)
 
-    # Create loss function
-    if args.loss == "l1":
-        loss_fn = CombinedLoss(l1_weight=1.0)
-    elif args.loss == "l2":
-        loss_fn = CombinedLoss(l2_weight=1.0)
-    else:  # combined
-        loss_fn = CombinedLoss(
-            l1_weight=args.l1_weight,
-            perceptual_weight=args.perceptual_weight,
-            ssim_weight=args.ssim_weight,
-        )
-
-    logger.info(f"Loss: {args.loss}")
-    if args.loss == "combined":
-        logger.debug(f"  L1 weight: {args.l1_weight}")
-        logger.debug(f"  Perceptual weight: {args.perceptual_weight}")
-        logger.debug(f"  SSIM weight: {args.ssim_weight}")
-
     # Generate unique run directory
     run_name = generate_run_name(args)
     checkpoint_dir = Path(args.checkpoint_dir) / run_name
     logger.info(f"Run: {run_name}")
 
-    # Create trainer config
-    config = TrainerConfig(
-        learning_rate=args.lr,
-        num_epochs=args.epochs,
-        checkpoint_dir=str(checkpoint_dir),
-        save_every=args.save_every,
-        device=args.device,
-        use_amp=not args.no_amp,
-    )
+    # GAN training path
+    if args.loss == "gan":
+        logger.info("Using GAN training (adversarial loss)")
+        logger.info(f"  L1 weight: {args.l1_weight}")
+        logger.info(f"  Perceptual weight: {args.perceptual_weight}")
+        logger.info(f"  SSIM weight: {args.ssim_weight}")
+        logger.info(f"  Adversarial weight: {args.adv_weight}")
+        logger.info(f"  Discriminator: {args.discriminator}")
 
-    # Create trainer
-    trainer = Trainer(
-        model=model,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        loss_fn=loss_fn,
-        config=config,
-    )
+        config = GANTrainerConfig(
+            lr_generator=args.lr,
+            lr_discriminator=args.lr,
+            num_epochs=args.epochs,
+            l1_weight=args.l1_weight,
+            perceptual_weight=args.perceptual_weight,
+            ssim_weight=args.ssim_weight,
+            adversarial_weight=args.adv_weight,
+            discriminator_type=args.discriminator,
+            checkpoint_dir=str(checkpoint_dir),
+            save_every=args.save_every,
+            device=args.device,
+        )
+
+        trainer = GANTrainer(
+            generator=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            config=config,
+        )
+    else:
+        # Standard training path
+        if args.loss == "l1":
+            loss_fn = CombinedLoss(l1_weight=1.0)
+        elif args.loss == "l2":
+            loss_fn = CombinedLoss(l2_weight=1.0)
+        else:  # combined
+            loss_fn = CombinedLoss(
+                l1_weight=args.l1_weight,
+                perceptual_weight=args.perceptual_weight,
+                ssim_weight=args.ssim_weight,
+            )
+
+        logger.info(f"Loss: {args.loss}")
+        if args.loss == "combined":
+            logger.debug(f"  L1 weight: {args.l1_weight}")
+            logger.debug(f"  Perceptual weight: {args.perceptual_weight}")
+            logger.debug(f"  SSIM weight: {args.ssim_weight}")
+
+        config = TrainerConfig(
+            learning_rate=args.lr,
+            num_epochs=args.epochs,
+            checkpoint_dir=str(checkpoint_dir),
+            save_every=args.save_every,
+            device=args.device,
+            use_amp=False,  # Disabled for Blackwell (sm_121) compatibility
+        )
+
+        trainer = Trainer(
+            model=model,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            loss_fn=loss_fn,
+            config=config,
+        )
 
     # Resume from checkpoint if specified
     if args.resume:

@@ -8,6 +8,7 @@ from .losses import (
     LOSS_REGISTRY,
 )
 from .trainer import Trainer, TrainerConfig
+from .gan_trainer import GANTrainer, GANTrainerConfig
 
 __all__ = [
     # Losses
@@ -21,4 +22,7 @@ __all__ = [
     # Trainer
     "Trainer",
     "TrainerConfig",
+    # GAN Trainer
+    "GANTrainer",
+    "GANTrainerConfig",
 ]
