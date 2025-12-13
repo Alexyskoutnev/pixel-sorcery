@@ -1,0 +1,46 @@
+[project]
+name = "pixel-sorcery"
+version = "0.1.0"
+description = "Image enhancement training framework for the AutoHDR hackathon"
+requires-python = ">=3.11"
+dependencies = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "pillow>=9.0.0",
+    "tqdm>=4.65.0",
+    "wand>=0.6.13",
+    "matplotlib>=3.7.0",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "ruff>=0.0.290",
+]
+# For CUDA 12.x support on Linux/Windows, install with:
+#   uv sync --extra cu124
+cu124 = [
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+]
+
+[tool.uv]
+# Ensure we get the right PyTorch build
+# On macOS: CPU + MPS support (default from PyPI)
+# On Linux/Windows: CPU by default, use --extra cu124 for CUDA
+package = false
+
+# Uncomment below for CUDA 12.4 on Linux/Windows:
+# [[tool.uv.index]]
+# name = "pytorch-cu124"
+# url = "https://download.pytorch.org/whl/cu124"
+# explicit = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+ignore = ["E501"]
