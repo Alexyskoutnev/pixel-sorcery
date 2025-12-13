@@ -1,5 +1,14 @@
 # NAFNet Mobile Deployment
 
+## Download Models
+
+**Hugging Face:** [SebRincon/nafnet-realestate](https://huggingface.co/SebRincon/nafnet-realestate)
+
+```bash
+# Download ONNX model directly
+wget https://huggingface.co/SebRincon/nafnet-realestate/resolve/main/nafnet_realestate.onnx
+```
+
 ## Model Stats
 - **Parameters**: 29.2 million
 - **ONNX size**: ~112 MB (FP32)
@@ -14,12 +23,16 @@
 | 3K | 7.3 MP | 500-800 MB |
 | 4K | 8.3 MP | 600-900 MB |
 
-## Generate ONNX Model
+## Get ONNX Model
 
-The ONNX file is too large for GitHub. Generate it locally:
-
+**Option 1: Download from Hugging Face** (recommended)
 ```bash
-# From pix2pix-train-v1 directory
+wget https://huggingface.co/SebRincon/nafnet-realestate/resolve/main/nafnet_realestate.onnx
+```
+
+**Option 2: Generate locally**
+```bash
+# From nafnet-realestate directory
 python convert_to_coreml.py
 ```
 
