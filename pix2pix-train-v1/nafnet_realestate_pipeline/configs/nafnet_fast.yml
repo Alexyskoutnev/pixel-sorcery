@@ -1,0 +1,166 @@
+# ============================================================
+# NAFNet Fast Training Config - Real Estate Photo Enhancement
+# Optimized for ~4-5 hours on GB10 (128GB) or ~6-8 hours on A100 (40GB)
+# ============================================================
+# 
+# Key optimizations for speed:
+#   - width: 32 (smaller model, still good quality)
+#   - gt_size: 384 (balanced patch size)
+#   - batch_size: 12 (utilizes GB10 memory)
+#   - total_iter: 30000 (sufficient for 500+ pairs)
+#   - Transfer learning from pretrained weights
+#
+# Expected results: ~80% of full training quality
+# PSNR improvement: +2-3 dB over input images
+# ============================================================
+
+name: NAFNet_RealEstate_Fast
+model_type: ImageCleanModel
+scale: 1
+num_gpu: 1
+manual_seed: 42
+
+# ============================================================
+# Dataset Configuration
+# ============================================================
+datasets:
+  train:
+    name: RealEstate_Train
+    type: PairedImageDataset
+    
+    # Paths to your prepared dataset
+    dataroot_gt: ../datasets/realestate/train/gt
+    dataroot_lq: ../datasets/realestate/train/lq
+    
+    # File handling
+    filename_tmpl: '{}'
+    io_backend:
+      type: disk
+    
+    # Patch size - 384 balances quality and speed
+    gt_size: 384
+    
+    # Augmentation - essential for 500 image dataset
+    use_hflip: true                 # Horizontal flip (safe for real estate)
+    use_rot: true                   # 90° rotations
+    
+    # DataLoader settings for GB10
+    num_worker_per_gpu: 6
+    batch_size_per_gpu: 12          # GB10 can handle this at 384px
+    
+    # CRITICAL for small datasets: repeat data many times per epoch
+    dataset_enlarge_ratio: 50       # 500 images × 50 = 25000 per epoch
+    
+    prefetch_mode: ~
+
+  val:
+    name: RealEstate_Val
+    type: PairedImageDataset
+    dataroot_gt: ../datasets/realestate/val/gt
+    dataroot_lq: ../datasets/realestate/val/lq
+    io_backend:
+      type: disk
+
+# ============================================================
+# Network Architecture - NAFNet width-32 (fast + good quality)
+# ============================================================
+network_g:
+  type: NAFNet
+  img_channel: 3
+  width: 32                         # 32 for speed, 64 for max quality
+  middle_blk_num: 12
+  enc_blk_nums: [2, 2, 4, 8]
+  dec_blk_nums: [2, 2, 2, 2]
+
+# ============================================================
+# Path Configuration
+# ============================================================
+path:
+  # Uncomment to use pretrained weights (recommended!)
+  # pretrain_network_g: ../pretrained/NAFNet-SIDD-width32.pth
+  pretrain_network_g: ~
+  strict_load_g: true
+  resume_state: ~
+
+# ============================================================
+# Training Configuration
+# ============================================================
+train:
+  # Exponential moving average for stable inference
+  ema_decay: 0.999
+  
+  # Optimizer - AdamW works best for transformers
+  optim_g:
+    type: AdamW
+    lr: !!float 1e-3                # 1e-3 for training from scratch
+    weight_decay: !!float 1e-4      # Regularization
+    betas: [0.9, 0.9]
+  
+  # Learning rate schedule - cosine annealing
+  scheduler:
+    type: TrueCosineAnnealingLR
+    T_max: 30000                    # Match total_iter
+    eta_min: !!float 1e-7           # Minimum LR
+  
+  # Total training iterations
+  total_iter: 30000                 # ~4-5 hours on GB10
+  warmup_iter: 500                  # Warmup for stability
+  
+  # --------------------------------------------------------
+  # Loss Functions
+  # --------------------------------------------------------
+  
+  # L1 Pixel Loss (primary) - preserves brightness/color fidelity
+  pixel_opt:
+    type: L1Loss
+    loss_weight: 1.0
+    reduction: mean
+  
+  # Perceptual Loss (secondary) - improves visual quality
+  perceptual_opt:
+    type: PerceptualLoss
+    layer_weights:
+      'conv3_4': 0.5
+      'conv4_4': 0.5
+      'conv5_4': 1.0
+    vgg_type: vgg19
+    use_input_norm: true
+    perceptual_weight: 0.5          # Balance with L1
+    style_weight: 0.0               # Disable style loss
+    criterion: l1
+
+# ============================================================
+# Validation Configuration
+# ============================================================
+val:
+  val_freq: !!float 3000            # Validate every 3000 iterations
+  save_img: true                    # Save sample outputs
+  
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 4
+      test_y_channel: false         # Use RGB, not just luminance
+    
+    ssim:
+      type: calculate_ssim
+      crop_border: 4
+      test_y_channel: false
+
+# ============================================================
+# Logging Configuration
+# ============================================================
+logger:
+  print_freq: 100                   # Print every 100 iterations
+  save_checkpoint_freq: !!float 5000  # Save model every 5000 iterations
+  use_tb_logger: true               # Enable TensorBoard
+  wandb:
+    project: ~                      # Set to enable W&B logging
+    resume_id: ~
+
+# ============================================================
+# Distributed Training (single GPU)
+# ============================================================
+dist_params:
+  backend: nccl
+  port: 29500
