@@ -214,3 +214,6 @@ checkpoints/
 *.pt
 *.pth
 *.ckpt
+
+# Personal Notes
+notes.txt

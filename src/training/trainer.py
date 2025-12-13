@@ -290,7 +290,7 @@ class Trainer:
         # No scheduler - LR stays constant throughout training
         return None
 
-    def train(self, 
+    def train(self,
               num_epochs: Optional[int] = None) -> dict[str, list]:
         num_epochs = num_epochs or self.config.num_epochs
 
@@ -298,6 +298,7 @@ class Trainer:
         logger.info(f"Training batches: {len(self.train_loader)}")
         if self.val_loader:
             logger.info(f"Validation batches: {len(self.val_loader)}")
+        logger.info(f"Initial memory: {self._get_memory_mb():.0f} MB")
 
         for epoch in range(num_epochs):
             self.current_epoch = epoch
@@ -334,6 +335,15 @@ class Trainer:
 
         return self.history
 
+    def _get_memory_mb(self) -> float:
+        """Get current GPU/MPS memory usage in MB."""
+        if self.device.type == "cuda":
+            return torch.cuda.memory_allocated(self.device) / 1024 / 1024
+        elif self.device.type == "mps":
+            # MPS memory tracking (Apple Silicon)
+            return torch.mps.current_allocated_memory() / 1024 / 1024
+        return 0.0
+
     def _train_epoch(self) -> float:
         self.model.train()
         total_loss = 0.0
@@ -369,7 +379,10 @@ class Trainer:
 
             total_loss += loss.item()
             self.global_step += 1
-            pbar.set_postfix({"loss": f"{loss.item():.4f}"})
+
+            # Show loss and memory usage in progress bar
+            mem_mb = self._get_memory_mb()
+            pbar.set_postfix({"loss": f"{loss.item():.4f}", "mem": f"{mem_mb:.0f}MB"})
 
         return total_loss / num_batches
 
@@ -475,10 +488,10 @@ class Trainer:
 
     def visualize_samples(
         self,
-        num_samples: int = 4,
+        num_samples: int = 5,
         save_path: Optional[str] = None,
         show: bool = False,
-    ) -> None:
+    ):
         """
         Create a matplotlib dashboard showing input → output → target comparisons.
 

@@ -30,12 +30,20 @@ Example with the hackathon data:
 """
 
 import argparse
+from datetime import datetime
 from pathlib import Path
 
 from src.models import get_model, MODEL_REGISTRY, ResidualWrapper
 from src.datasets import get_dataloaders
 from src.training import Trainer, TrainerConfig, CombinedLoss
 from src.utils import logger
+
+
+def generate_run_name(args) -> str:
+    """Generate a unique run name based on config and timestamp."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # Format: model_imgsize_batchsize_timestamp
+    return f"{args.model}_{args.image_size}px_bs{args.batch_size}_{timestamp}"
 
 
 def parse_args():
@@ -149,7 +157,7 @@ def parse_args():
     parser.add_argument(
         "--save_every",
         type=int,
-        default=10,
+        default=5,
         help="Save checkpoint every N epochs",
     )
     parser.add_argument(
@@ -234,11 +242,16 @@ def main():
         logger.debug(f"  Perceptual weight: {args.perceptual_weight}")
         logger.debug(f"  SSIM weight: {args.ssim_weight}")
 
+    # Generate unique run directory
+    run_name = generate_run_name(args)
+    checkpoint_dir = Path(args.checkpoint_dir) / run_name
+    logger.info(f"Run: {run_name}")
+
     # Create trainer config
     config = TrainerConfig(
         learning_rate=args.lr,
         num_epochs=args.epochs,
-        checkpoint_dir=args.checkpoint_dir,
+        checkpoint_dir=str(checkpoint_dir),
         save_every=args.save_every,
         device=args.device,
         use_amp=not args.no_amp,
@@ -265,8 +278,8 @@ def main():
     logger.info("Training Complete!")
     logger.info("=" * 50)
     logger.info(f"Best validation loss: {trainer.best_val_loss:.6f}")
-    logger.info(f"Checkpoints saved to: {args.checkpoint_dir}/")
-    logger.info(f"Best model: {args.checkpoint_dir}/best_model.pt")
+    logger.info(f"Checkpoints saved to: {checkpoint_dir}/")
+    logger.info(f"Best model: {checkpoint_dir}/best_model.pt")
     logger.info(f"Eval samples saved alongside each checkpoint (*_eval.png)")
 
 
