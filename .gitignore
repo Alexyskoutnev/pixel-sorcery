@@ -221,3 +221,6 @@ notes.txt
 
 # Local configuration files
 .claude/setting.local.json
+
+# model
+/bin

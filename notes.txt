@@ -19,3 +19,15 @@ nohup python train.py \
       --depth 5 \
       --epochs 100 \
       --l1_weight 2.0 > training.log 2>&1 &
+
+# Training with a GAN 
+
+  nohup python train.py --data_dir autohdr-real-estate-577/images --loss gan --model unet --image_size 1024 --batch_size 8 --epochs 100 --l1_weight 2.0 > training.log 2>&1 &
+
+# Connecting to the DGX
+ssh -t 172.16.11.249
+
+## how to visulize the graph 
+netron model.onnx
+
+ python scripts/export_onnx.py -c checkpoints_dgx/unet_512px_bs16_20251213_212353/best_model.pt
