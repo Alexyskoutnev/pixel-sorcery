@@ -212,6 +212,7 @@ nafnet-realestate/datasets/
 nafnet-realestate/datasets/realestate/train/gt/
 nafnet-realestate/datasets/realestate/train/lq/
 nafnet-realestate/dataset_triptychs/
+nafnet-realestate/full_triptychs_fp32/
 
 # Preview sweep artifacts (keep quadtych + metrics, ignore intermediate outputs)
 nafnet-realestate/preview_sweeps/**/inputs_lq/

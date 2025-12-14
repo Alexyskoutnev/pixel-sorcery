@@ -394,6 +394,7 @@ def _torch_infer(
     img_bgr_uint8: Any,
     *,
     rss_interval_sec: float,
+    channels_last: bool,
 ) -> tuple[Any, float, float, float, float]:
     import cv2  # type: ignore
     import numpy as np  # type: ignore
@@ -406,7 +407,10 @@ def _torch_infer(
     # BGR -> RGB, normalize to [0, 1], HWC -> CHW -> NCHW
     img_rgb = padded[:, :, ::-1].copy()
     img_rgb = img_rgb.astype(np.float32) / 255.0
-    tensor = torch.from_numpy(img_rgb).permute(2, 0, 1).unsqueeze(0).to(device)
+    tensor = torch.from_numpy(img_rgb).permute(2, 0, 1).unsqueeze(0)
+    if channels_last:
+        tensor = tensor.contiguous(memory_format=torch.channels_last)
+    tensor = tensor.to(device)
     t1 = time.perf_counter()
 
     if device.startswith("cuda"):
@@ -414,7 +418,7 @@ def _torch_infer(
     infer_start = time.perf_counter()
 
     def _forward() -> Any:
-        with torch.no_grad():
+        with torch.inference_mode():
             return model(tensor)
 
     out, rss_peak = _run_with_rss_sampler(
@@ -515,6 +519,11 @@ def main() -> None:
         help="Output directory for predictions + triptychs + logs.",
     )
     parser.add_argument(
+        "--run-id",
+        default=None,
+        help="Optional run identifier (folder name). If omitted, uses a timestamp.",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=0,
@@ -524,6 +533,11 @@ def main() -> None:
         "--skip-existing",
         action="store_true",
         help="Skip images where the triptych output already exists.",
+    )
+    parser.add_argument(
+        "--no-save-pred",
+        action="store_true",
+        help="Do not save per-image prediction outputs (saves only triptychs + CSV/JSON).",
     )
     parser.add_argument(
         "--jpeg-quality",
@@ -593,6 +607,21 @@ def main() -> None:
         default="cuda",
         help="Torch device (default: cuda).",
     )
+    parser.add_argument(
+        "--channels-last",
+        action="store_true",
+        help="Use channels_last tensors/model (often faster on CUDA).",
+    )
+    parser.add_argument(
+        "--cudnn-benchmark",
+        action="store_true",
+        help="Enable cudnn benchmark (can improve speed for repeated resolutions).",
+    )
+    parser.add_argument(
+        "--no-tf32",
+        action="store_true",
+        help="Disable TF32 math (max numeric fidelity; may be slower).",
+    )
 
     args = parser.parse_args()
 
@@ -617,7 +646,8 @@ def main() -> None:
     if not pairs:
         raise SystemExit("ERROR: No paired images found.")
 
-    out_dir = args.out_dir / args.backend / _now_compact()
+    run_id = args.run_id or _now_compact()
+    out_dir = args.out_dir / args.backend / run_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
     metrics_csv = out_dir / "metrics.csv"
@@ -676,7 +706,23 @@ def main() -> None:
                 pass
         if not args.torch_model.exists():
             raise SystemExit(f"ERROR: Torch model not found: {args.torch_model}")
+        try:
+            import torch  # type: ignore
+
+            torch.backends.cudnn.benchmark = bool(args.cudnn_benchmark)
+            if args.no_tf32:
+                torch.backends.cuda.matmul.allow_tf32 = False
+                torch.backends.cudnn.allow_tf32 = False
+        except Exception:
+            pass
         torch_model = _load_torch_model(args.torch_model, device=args.device)
+        if args.channels_last:
+            try:
+                import torch  # type: ignore
+
+                torch_model = torch_model.to(memory_format=torch.channels_last)
+            except Exception:
+                pass
         pred_label = f"TORCH ({args.device.upper()})"
 
     load_s = time.perf_counter() - load_start
@@ -703,7 +749,13 @@ def main() -> None:
                     rss_interval_sec=rss_interval_sec,
                 )
             else:
-                _torch_infer(torch_model, args.device, img0, rss_interval_sec=rss_interval_sec)
+                _torch_infer(
+                    torch_model,
+                    args.device,
+                    img0,
+                    rss_interval_sec=rss_interval_sec,
+                    channels_last=bool(args.channels_last),
+                )
 
     # Process images
     import cv2  # type: ignore
@@ -726,7 +778,8 @@ def main() -> None:
 
         pred_dir = out_dir / split / "pred"
         trip_dir = out_dir / split / "triptych"
-        pred_dir.mkdir(parents=True, exist_ok=True)
+        if not args.no_save_pred:
+            pred_dir.mkdir(parents=True, exist_ok=True)
         trip_dir.mkdir(parents=True, exist_ok=True)
 
         pred_path = pred_dir / lq_path.name
@@ -752,14 +805,16 @@ def main() -> None:
                 args.device,
                 img_lq,
                 rss_interval_sec=rss_interval_sec,
+                channels_last=bool(args.channels_last),
             )
         t1 = time.perf_counter()
 
         rss_after = _get_rss_mb()
         peak_rss_seen = max(peak_rss_seen, rss_after if rss_after == rss_after else peak_rss_seen)
 
-        # Save predicted output
-        cv2.imwrite(str(pred_path), img_pred, [cv2.IMWRITE_JPEG_QUALITY, int(args.jpeg_quality)])
+        # Save predicted output (optional)
+        if not args.no_save_pred:
+            cv2.imwrite(str(pred_path), img_pred, [cv2.IMWRITE_JPEG_QUALITY, int(args.jpeg_quality)])
 
         # Create and save triptych
         stitched, imwrite_params = _stitch_triptych(
