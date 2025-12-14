@@ -208,3 +208,19 @@ __marimo__/
 
 # Dataset
 autohdr-real-estate-577/
+
+# Model checkpoints and weights
+checkpoints/
+checkpoints_dgx/
+*.pt
+*.pth
+*.ckpt
+
+# Personal Notes
+notes.txt
+
+# Local configuration files
+.claude/setting.local.json
+
+# model
+/bin
