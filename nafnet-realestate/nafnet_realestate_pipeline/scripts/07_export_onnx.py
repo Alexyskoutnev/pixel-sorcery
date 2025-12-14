@@ -27,7 +27,7 @@ def export_to_onnx(
     output_path: str,
     width: int = 32,
     input_size: tuple = (1, 3, 512, 512),
-    opset_version: int = 17,
+    opset_version: int = 18,
     dynamic_axes: bool = True,
     fp16: bool = False,
 ):
@@ -147,7 +147,7 @@ def main():
     parser.add_argument('--width', type=int, default=32, help='NAFNet width (default: 32)')
     parser.add_argument('--input-size', type=int, nargs=4, default=[1, 3, 512, 512],
                         help='Input size: batch channels height width')
-    parser.add_argument('--opset', type=int, default=17, help='ONNX opset version')
+    parser.add_argument('--opset', type=int, default=18, help='ONNX opset version')
     parser.add_argument('--static', action='store_true', help='Use static input size (no dynamic axes)')
     parser.add_argument('--fp16', action='store_true', help='Export FP16 ONNX weights/ops (experimental)')
     parser.add_argument('--tensorrt', action='store_true', help='Print TensorRT conversion command')

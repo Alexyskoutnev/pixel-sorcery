@@ -216,6 +216,7 @@ nafnet-realestate/full_triptychs_fp32/
 nafnet-realestate/api_runs/
 nafnet-realestate/api_smoke_outputs/
 nafnet-realestate/s3_gallery/
+nafnet-realestate/hf_artifacts/
 
 # Local clones / large artifacts (downloaded/generated)
 nafnet-realestate/BasicSR/
