@@ -1,0 +1,128 @@
+# ============================================================
+# NAFNet Color Fine-tune (3h budget) — Real Estate Enhancement
+# ============================================================
+#
+# Intent:
+# - Start from the best baseline weights (net_g_12000.pth)
+# - Add a color-aware pixel loss (RGB L1 + masked YCbCr chroma constraint)
+# - Keep the run small enough to fit ~3 hours (~4500 iters on GB10, based on ~2.05s/iter)
+#
+# Important:
+# - This config expects you to run from `nafnet-realestate/` as the CWD.
+# - `ColorAwareLoss` is injected into BasicSR by the run script:
+#   `nafnet_realestate_pipeline/scripts/08_train_color_finetune_3h.sh`
+#
+# ============================================================
+
+name: NAFNet_RealEstate_ColorFT_3h
+model_type: ImageRestorationModel
+scale: 1
+num_gpu: 1
+manual_seed: 42
+
+datasets:
+  train:
+    name: RealEstate_Train
+    type: PairedImageDataset
+    dataroot_gt: datasets/realestate/train/gt
+    dataroot_lq: datasets/realestate/train/lq
+    filename_tmpl: '{}'
+    io_backend:
+      type: disk
+
+    gt_size: 256
+    use_hflip: true
+    use_rot: true
+
+    num_worker_per_gpu: 6
+    batch_size_per_gpu: 20
+    dataset_enlarge_ratio: 50
+    prefetch_mode: ~
+
+  val:
+    name: RealEstate_Val
+    type: PairedImageDataset
+    dataroot_gt: datasets/realestate/val/gt
+    dataroot_lq: datasets/realestate/val/lq
+    io_backend:
+      type: disk
+
+network_g:
+  type: NAFNet
+  img_channel: 3
+  width: 32
+  middle_blk_num: 12
+  enc_blk_nums: [2, 2, 4, 8]
+  dec_blk_nums: [2, 2, 2, 2]
+
+path:
+  pretrain_network_g: BasicSR/experiments/NAFNet_RealEstate_Fast/models/net_g_12000.pth
+  strict_load_g: true
+  resume_state: ~
+
+train:
+  ema_decay: 0.999
+
+  optim_g:
+    type: AdamW
+    lr: !!float 2e-4
+    weight_decay: !!float 1e-4
+    betas: [0.9, 0.9]
+
+  scheduler:
+    type: CosineAnnealingRestartLR
+    periods: [4500]
+    restart_weights: [1]
+    eta_min: !!float 1e-6
+
+  total_iter: 4500
+  warmup_iter: 200
+
+  # Pixel loss (patched into BasicSR at runtime)
+  pixel_opt:
+    type: ColorAwareLoss
+    loss_weight: 1.0
+    rgb_weight: 1.0
+    cbcr_weight: 0.25
+    chroma_threshold: 0.06
+    mask_type: hard
+
+  # Perceptual loss (keep small)
+  perceptual_opt:
+    type: PerceptualLoss
+    layer_weights:
+      'conv3_4': 0.5
+      'conv4_4': 0.5
+      'conv5_4': 1.0
+    vgg_type: vgg19
+    use_input_norm: true
+    perceptual_weight: 0.1
+    style_weight: 0.0
+    criterion: l1
+
+val:
+  # Keep mid-run validation off for the 3h budget; a final validation is run automatically at the end.
+  val_freq: !!float 999999
+  save_img: true
+  metrics:
+    psnr:
+      type: calculate_psnr
+      crop_border: 4
+      test_y_channel: false
+    ssim:
+      type: calculate_ssim
+      crop_border: 4
+      test_y_channel: false
+
+logger:
+  print_freq: 100
+  save_checkpoint_freq: !!float 1500
+  use_tb_logger: true
+  wandb:
+    project: ~
+    resume_id: ~
+
+dist_params:
+  backend: nccl
+  port: 29500
+
