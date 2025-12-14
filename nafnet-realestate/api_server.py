@@ -36,7 +36,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -249,6 +250,80 @@ def _tier_long_side(tier: Tier) -> int | None:
     if tier == "full":
         return None
     return int(tier)
+
+
+class ItemTraceModel(BaseModel):
+    t_request_received_ms: int | None = None
+    t_saved_ms: int | None = None
+    t_enqueued_ms: int | None = None
+    t_worker_start_ms: int | None = None
+    t_decode_done_ms: int | None = None
+    t_preprocess_done_ms: int | None = None
+    t_infer_start_ms: int | None = None
+    t_infer_end_ms: int | None = None
+    t_encode_done_ms: int | None = None
+    t_done_ms: int | None = None
+
+    decode_ms: float | None = None
+    preprocess_ms: float | None = None
+    infer_ms: float | None = None
+    encode_ms: float | None = None
+    total_worker_ms: float | None = None
+
+    rss_before_mb: float | None = None
+    rss_after_mb: float | None = None
+    gpu_alloc_before_mb: float | None = None
+    gpu_alloc_after_mb: float | None = None
+    gpu_peak_alloc_mb: float | None = None
+
+
+class ItemPublicModel(BaseModel):
+    item_id: str
+    job_id: str
+    filename: str
+    tier: Tier
+    jpeg_quality: int
+    status: ItemStatus
+    error: str | None = None
+    width: int | None = None
+    height: int | None = None
+    megapixels: float | None = None
+    trace: ItemTraceModel
+    queue_wait_ms: int | None = None
+    output_url: str | None = None
+
+
+class JobPublicModel(BaseModel):
+    job_id: str
+    tier: Tier
+    jpeg_quality: int
+    status: JobStatus
+    error: str | None = None
+    items_total: int
+    items_done: int
+    items_error: int
+    items: list[ItemPublicModel]
+    events_url: str
+    download_url: str
+    zip_url: str | None = None
+    events_count: int
+
+
+class HealthzModel(BaseModel):
+    ok: bool
+    time_ms: int
+    device: str
+    gpu_slots: int
+    channels_last: bool
+    cudnn_benchmark: bool
+    rss_mb: float
+    jobs: int
+    items: int
+    queue_sizes: dict[str, int]
+
+
+class TiersModel(BaseModel):
+    tiers: list[dict[str, Any]]
 
 
 def _public_item(item: Item) -> dict[str, Any]:
@@ -581,7 +656,7 @@ def _startup() -> None:
         t.start()
 
 
-@APP.get("/healthz")
+@APP.get("/healthz", response_model=HealthzModel)
 def healthz() -> dict[str, Any]:
     with STATE.lock:
         job_count = len(STATE.jobs)
@@ -601,7 +676,7 @@ def healthz() -> dict[str, Any]:
     }
 
 
-@APP.get("/v1/tiers")
+@APP.get("/v1/tiers", response_model=TiersModel)
 def tiers() -> dict[str, Any]:
     return {
         "tiers": [
@@ -612,13 +687,13 @@ def tiers() -> dict[str, Any]:
     }
 
 
-@APP.post("/v1/jobs")
+@APP.post("/v1/jobs", response_model=JobPublicModel)
 async def create_job(
     tier: Tier = Form("1024"),
     jpeg_quality: int = Form(95),
     images: list[UploadFile] | None = File(None),
     zip_file: UploadFile | None = File(None),
-) -> JSONResponse:
+) -> dict[str, Any]:
     if images is None:
         images = []
     if not images and zip_file is None:
@@ -703,18 +778,18 @@ async def create_job(
         job = STATE.jobs[job_id]
         items = [STATE.items[i] for i in job.items if i in STATE.items]
         payload = _public_job(job, items)
-    return JSONResponse(payload)
+    return payload
 
 
-@APP.get("/v1/jobs/{job_id}")
-def get_job(job_id: str) -> JSONResponse:
+@APP.get("/v1/jobs/{job_id}", response_model=JobPublicModel)
+def get_job(job_id: str) -> dict[str, Any]:
     with STATE.lock:
         job = STATE.jobs.get(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="job not found")
         items = [STATE.items[i] for i in job.items if i in STATE.items]
         payload = _public_job(job, items)
-    return JSONResponse(payload)
+    return payload
 
 
 @APP.get("/v1/jobs/{job_id}/download")
@@ -774,7 +849,13 @@ async def job_events(job_id: str, since: int = 0) -> StreamingResponse:
                 yield ": keepalive\n\n"
                 last_keepalive = time.time()
 
-    return StreamingResponse(_gen(), media_type="text/event-stream")
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        # Helps with some reverse proxies that buffer streaming responses.
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(_gen(), media_type="text/event-stream", headers=headers)
 
 
 def main() -> None:

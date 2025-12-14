@@ -55,6 +55,11 @@ conda activate nafnet
 python api_server.py --host 127.0.0.1 --port 8000
 ```
 
+API docs:
+- Swagger UI: `http://127.0.0.1:8000/docs`
+- OpenAPI JSON: `http://127.0.0.1:8000/openapi.json`
+- Spec + examples: [API.md](API.md)
+
 Smoke test (starts server, submits 1 image, streams SSE events, downloads output):
 
 ```bash
