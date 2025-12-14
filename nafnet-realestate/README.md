@@ -35,6 +35,17 @@ python inference.py --input photo.jpg --output enhanced.jpg
 python inference.py --input ./photos/ --output ./enhanced/
 ```
 
+### Validate Model Output vs Dataset
+Creates triptychs `(LQ | PRED | GT)` across `datasets/realestate/{train,val}` and logs per-image RAM/time.
+
+```bash
+conda activate nafnet  # or your env with onnxruntime + opencv + psutil installed
+python create_dataset_triptychs.py --backend torch --device cuda
+```
+
+Outputs land in `nafnet-realestate/dataset_triptychs/onnx/<timestamp>/` (`metrics.csv`, `summary.json`, plus images).
+Outputs land in `nafnet-realestate/dataset_triptychs/<backend>/<timestamp>/` (`metrics.csv`, `summary.json`, plus images).
+
 ## Performance
 
 | Metric | Value |
@@ -78,6 +89,7 @@ nafnet-realestate/
 ├── benchmark_inference.py    # Detailed performance testing
 ├── convert_to_coreml.py      # Export to ONNX
 ├── create_comparisons.py     # Side-by-side comparisons
+├── create_dataset_triptychs.py  # (LQ | PRED | GT) dataset triptychs + RAM/time logs
 ├── BENCHMARK_RESULTS.md      # Full benchmark data
 ├── MODEL_CARD.md             # Hugging Face model card
 ├── mobile_models/

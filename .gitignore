@@ -208,3 +208,7 @@ __marimo__/
 
 # Dataset
 autohdr-real-estate-577/
+nafnet-realestate/datasets/
+nafnet-realestate/datasets/realestate/train/gt/
+nafnet-realestate/datasets/realestate/train/lq/
+nafnet-realestate/dataset_triptychs/

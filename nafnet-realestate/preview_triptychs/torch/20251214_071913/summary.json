@@ -1,0 +1,63 @@
+{
+  "backend": "torch",
+  "total_images": 10,
+  "baseline_rss_mb": 16.6875,
+  "splits": {
+    "val": {
+      "images": 10,
+      "timing_total_s": {
+        "count": 10.0,
+        "min": 7.141189226998904,
+        "p50": 7.991634125999553,
+        "p90": 8.084122660999128,
+        "max": 8.11194574900037,
+        "mean": 7.917720701799771
+      },
+      "timing_inference_s": {
+        "count": 10.0,
+        "min": 6.9610558610002045,
+        "p50": 7.7817661579993,
+        "p90": 7.801666139999725,
+        "max": 7.818705825999132,
+        "mean": 7.702873551700032
+      },
+      "rss_before_mb": {
+        "count": 10.0,
+        "min": 1282.328125,
+        "p50": 1430.0078125,
+        "p90": 1491.234375,
+        "max": 1492.078125,
+        "mean": 1424.995703125
+      },
+      "rss_after_mb": {
+        "count": 10.0,
+        "min": 1324.7109375,
+        "p50": 1430.01953125,
+        "p90": 1491.671875,
+        "max": 1512.30859375,
+        "mean": 1437.597265625
+      },
+      "rss_peak_during_infer_mb": {},
+      "psnr_pred_gt": {
+        "count": 10.0,
+        "min": 16.206799703532777,
+        "p50": 21.103686706613605,
+        "p90": 25.700506438164474,
+        "max": 26.25360784169603,
+        "mean": 21.12579502542637
+      }
+    }
+  },
+  "output_dir": "nafnet-realestate/preview_triptychs/torch/20251214_071913",
+  "dataset_root": "/home/asus/sebastian/pixel-sorcery/nafnet-realestate/datasets/realestate",
+  "selected_splits": [
+    "val"
+  ],
+  "load_time_s": 6.586419246999867,
+  "ram_sample_ms": 0,
+  "model_rss_mb": 894.609375,
+  "peak_rss_seen_mb": 1512.30859375,
+  "elapsed_wall_s": 84.3914188639992,
+  "torch_model": "/home/asus/sebastian/pixel-sorcery/nafnet-realestate/BasicSR/experiments/NAFNet_RealEstate_Fast/models/net_g_12000.pth",
+  "torch_device": "cuda"
+}
