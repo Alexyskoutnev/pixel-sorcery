@@ -26,6 +26,7 @@ datasets:
     type: PairedImageDataset
     dataroot_gt: datasets/realestate/train/gt
     dataroot_lq: datasets/realestate/train/lq
+    meta_info_file: nafnet_realestate_pipeline/meta/train_color_focus.txt
     filename_tmpl: '{}'
     io_backend:
       type: disk
@@ -44,6 +45,16 @@ datasets:
     type: PairedImageDataset
     dataroot_gt: datasets/realestate/val/gt
     dataroot_lq: datasets/realestate/val/lq
+    io_backend:
+      type: disk
+
+  val_color:
+    name: RealEstate_Val_ColorStress
+    type: PairedImageDataset
+    dataroot_gt: datasets/realestate/val/gt
+    dataroot_lq: datasets/realestate/val/lq
+    meta_info_file: nafnet_realestate_pipeline/meta/val_color_stress.txt
+    filename_tmpl: '{}'
     io_backend:
       type: disk
 
@@ -125,4 +136,3 @@ logger:
 dist_params:
   backend: nccl
   port: 29500
-

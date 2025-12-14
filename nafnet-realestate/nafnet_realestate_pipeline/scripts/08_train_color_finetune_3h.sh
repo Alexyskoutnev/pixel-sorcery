@@ -20,6 +20,7 @@ CONFIG_FILE="${PROJECT_ROOT}/nafnet_realestate_pipeline/configs/nafnet_color_fin
 
 PATCH_SRC="${PROJECT_ROOT}/nafnet_realestate_pipeline/patches/basicsr/losses/color_aware_loss.py"
 PATCH_DST="${PROJECT_ROOT}/BasicSR/basicsr/losses/color_aware_loss.py"
+META_GEN="${PROJECT_ROOT}/nafnet_realestate_pipeline/scripts/09_make_color_focus_meta.py"
 
 echo "=============================================="
 echo "  NAFNet Color Fine-tune (3h budget)"
@@ -36,6 +37,11 @@ fi
 
 if [ ! -f "${PATCH_SRC}" ]; then
   echo "❌ Patch source not found: ${PATCH_SRC}"
+  exit 1
+fi
+
+if [ ! -f "${META_GEN}" ]; then
+  echo "❌ Meta generator not found: ${META_GEN}"
   exit 1
 fi
 
@@ -66,11 +72,6 @@ echo ""
 
 cd "${PROJECT_ROOT}"
 
-echo "Starting training..."
-echo "TensorBoard:"
-echo "  tensorboard --logdir BasicSR/tb_logger"
-echo ""
-
 # Prefer the known-good conda env if present; allow override via PYTHON_BIN.
 PYTHON_BIN="${PYTHON_BIN:-}"
 if [ -z "${PYTHON_BIN}" ]; then
@@ -81,11 +82,21 @@ if [ -z "${PYTHON_BIN}" ]; then
   fi
 fi
 
+echo "Starting training..."
+echo "TensorBoard:"
+echo "  tensorboard --logdir BasicSR/tb_logger"
+echo ""
+
 echo "Using python: ${PYTHON_BIN}"
 echo ""
 
 # BasicSR is a local checkout; ensure it’s importable without requiring `pip install -e .`.
 export PYTHONPATH="${PROJECT_ROOT}/BasicSR:${PYTHONPATH:-}"
+
+# Generate meta_info files to oversample curated color failures (train) and stress val.
+echo "Generating meta_info files for color-focused sampling..."
+"${PYTHON_BIN}" "${META_GEN}"
+echo ""
 
 AUTO_RESUME_FLAG=""
 if [ "${AUTO_RESUME:-0}" = "1" ]; then
@@ -95,3 +106,12 @@ if [ "${AUTO_RESUME:-0}" = "1" ]; then
 fi
 
 "${PYTHON_BIN}" -u BasicSR/basicsr/train.py -opt "${CONFIG_FILE}" ${AUTO_RESUME_FLAG}
+
+echo ""
+echo "==================================================="
+echo "Finished. Checkpoints should be under:"
+echo "  BasicSR/experiments/NAFNet_RealEstate_ColorFT_3h/models/"
+echo "Look for:"
+echo "  - net_g_*.pth   (iter checkpoints; saved every 1500 iters)"
+echo "  - net_g_latest.pth"
+echo "==================================================="
