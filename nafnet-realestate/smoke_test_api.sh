@@ -7,7 +7,7 @@ Smoke test for nafnet-realestate/api_server.py.
 
 Usage:
   conda activate nafnet
-  bash nafnet-realestate/smoke_test_api.sh [--tier 1024|2048|full] [--port 8009] [--image path.jpg]
+  bash nafnet-realestate/smoke_test_api.sh [--model default|<id>] [--tier 1024|2048|full] [--port 8009] [--image path.jpg]
 
 Notes:
   - Starts the API server locally, submits 1 image, streams SSE events, downloads output, then stops the server.
@@ -22,6 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 TIER="1024"
+MODEL="default"
 PORT="8009"
 HOST="127.0.0.1"
 IMAGE="${SCRIPT_DIR}/test_input/0000.jpg"
@@ -30,6 +31,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --tier)
       TIER="${2:-}"; shift 2 ;;
+    --model)
+      MODEL="${2:-}"; shift 2 ;;
     --port)
       PORT="${2:-}"; shift 2 ;;
     --host)
@@ -88,6 +91,7 @@ done
 
 echo "[smoke] creating job (tier=${TIER}) ..."
 RESP="$(curl -fsS -X POST \
+  -F "model=${MODEL}" \
   -F "tier=${TIER}" \
   -F "jpeg_quality=95" \
   -F "images=@${IMAGE}" \

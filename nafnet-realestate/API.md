@@ -9,6 +9,7 @@ conda activate nafnet
 
 # Optional config
 export TORCH_MODEL_PATH="nafnet-realestate/BasicSR/experiments/NAFNet_RealEstate_Fast/models/net_g_12000.pth"
+export MODELS_DIRS="$HOME/models,nafnet-realestate/models"  # auto-discover additional *.pth/*.pt at startup
 export DEVICE=cuda                    # cuda|cpu
 export GPU_SLOTS=1                    # number of warm model replicas (VRAM scales with this)
 export WARMUP_ITERS=2                 # warmup forward passes per tier on startup
@@ -29,6 +30,9 @@ Interactive docs:
 |---|---|---|
 | GET | `/healthz` | basic health + queue sizes + RSS |
 | GET | `/v1/tiers` | supported tiers (`1024`, `2048`, `full`) |
+| GET | `/v1/models` | list available models + ids |
+| POST | `/v1/models/rescan` | re-scan `MODELS_DIRS` for new files |
+| POST | `/v1/models/{model}/load` | load + warm a model by id/name/path |
 | POST | `/v1/jobs` | submit 1+ images (multipart or zip) |
 | GET | `/v1/jobs/{job_id}` | job status + per-item trace |
 | GET | `/v1/jobs/{job_id}/events` | SSE event stream (progress) |
@@ -39,6 +43,7 @@ Interactive docs:
 
 ```bash
 curl -sS -X POST \
+  -F model=default \
   -F tier=1024 \
   -F jpeg_quality=95 \
   -F images=@nafnet-realestate/test_input/0000.jpg \
@@ -49,6 +54,7 @@ curl -sS -X POST \
 
 ```bash
 curl -sS -X POST \
+  -F model=default \
   -F tier=2048 \
   -F jpeg_quality=95 \
   -F images=@nafnet-realestate/test_input/0000.jpg \
@@ -65,11 +71,23 @@ rm -f "$tmpzip"  # mktemp creates the file; zip expects to create it
 zip -j "$tmpzip" nafnet-realestate/test_input/0000.jpg nafnet-realestate/test_input/0001.jpg >/dev/null
 
 curl -sS -X POST \
+  -F model=default \
   -F tier=full \
   -F jpeg_quality=95 \
   -F zip_file=@"$tmpzip" \
   http://127.0.0.1:8000/v1/jobs | jq .
 ```
+
+## Choosing a model
+
+- Put additional `.pth` / `.pt` files in `~/models` (or `MODELS_DIRS`) and restart the server, or call `POST /v1/models/rescan`.
+- Discover model ids via:
+
+```bash
+curl -sS http://127.0.0.1:8000/v1/models | jq .
+```
+
+Then pass the `model` field on `/v1/jobs` (by `model_id` or unique filename).
 
 ## Stream progress (SSE)
 

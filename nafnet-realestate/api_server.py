@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import queue
@@ -184,6 +185,7 @@ Tier = Literal["1024", "2048", "full"]
 class Item:
     item_id: str
     job_id: str
+    model_id: str
     filename: str
     tier: Tier
     jpeg_quality: int
@@ -204,6 +206,7 @@ JobStatus = Literal["queued", "processing", "done", "error"]
 class Job:
     job_id: str
     created_ms: int
+    model_id: str
     tier: Tier
     jpeg_quality: int
     items: list[str] = field(default_factory=list)  # item_ids
@@ -215,9 +218,24 @@ class Job:
     events: list[dict[str, Any]] = field(default_factory=list)
 
 
+@dataclass
+class ModelEntry:
+    model_id: str
+    checkpoint_path: str
+    filename: str
+    loaded: bool = False
+    loading: bool = False
+    error: str | None = None
+    load_time_s: float | None = None
+    loaded_ms: int | None = None
+    last_used_ms: int | None = None
+    pool: "queue.Queue[Any]" = field(default_factory=queue.Queue, repr=False)
+
+
 class ServerState:
     def __init__(self) -> None:
         self.lock = threading.Lock()
+        self.model_load_cond = threading.Condition(self.lock)
         self.jobs: dict[str, Job] = {}
         self.items: dict[str, Item] = {}
         self.queues: dict[Tier, "queue.Queue[str]"] = {
@@ -225,11 +243,16 @@ class ServerState:
             "2048": queue.Queue(),
             "full": queue.Queue(),
         }
-        self.model_pool: "queue.Queue[Any]" = queue.Queue()
+        self.models: dict[str, ModelEntry] = {}
+        self.model_aliases: dict[str, str] = {}
+        self.default_model_id: str = ""
+        self.models_dirs: list[Path] = []
         self.device: str = "cuda"
         self.channels_last: bool = True
         self.cudnn_benchmark: bool = False
         self.gpu_slots: int = 1
+        self.warmup_iters: int = 2
+        self.infer_semaphore = threading.Semaphore(1)
         self.runs_dir: Path = SCRIPT_DIR / "api_runs"
 
     def push_event(self, job_id: str, event: dict[str, Any]) -> None:
@@ -280,6 +303,7 @@ class ItemTraceModel(BaseModel):
 class ItemPublicModel(BaseModel):
     item_id: str
     job_id: str
+    model_id: str
     filename: str
     tier: Tier
     jpeg_quality: int
@@ -295,6 +319,7 @@ class ItemPublicModel(BaseModel):
 
 class JobPublicModel(BaseModel):
     job_id: str
+    model_id: str
     tier: Tier
     jpeg_quality: int
     status: JobStatus
@@ -326,6 +351,20 @@ class TiersModel(BaseModel):
     tiers: list[dict[str, Any]]
 
 
+class ModelPublicModel(BaseModel):
+    model_id: str
+    filename: str
+    loaded: bool
+    error: str | None = None
+    load_time_s: float | None = None
+
+
+class ModelsListModel(BaseModel):
+    default_model: str
+    aliases: dict[str, str]
+    models: list[ModelPublicModel]
+
+
 def _public_item(item: Item) -> dict[str, Any]:
     trace = asdict(item.trace)
     queue_wait_ms = None
@@ -334,6 +373,7 @@ def _public_item(item: Item) -> dict[str, Any]:
     return {
         "item_id": item.item_id,
         "job_id": item.job_id,
+        "model_id": item.model_id,
         "filename": item.filename,
         "tier": item.tier,
         "jpeg_quality": item.jpeg_quality,
@@ -353,6 +393,7 @@ def _public_job(job: Job, items: list[Item]) -> dict[str, Any]:
     err = sum(1 for i in items if i.status == "error")
     return {
         "job_id": job.job_id,
+        "model_id": job.model_id,
         "tier": job.tier,
         "jpeg_quality": job.jpeg_quality,
         "status": job.status,
@@ -366,6 +407,243 @@ def _public_job(job: Job, items: list[Item]) -> dict[str, Any]:
         "zip_url": f"/v1/jobs/{job.job_id}/download" if job.zip_path else None,
         "events_count": len(job.events),
     }
+
+
+def _short_hash(text: str) -> str:
+    return hashlib.blake2s(text.encode("utf-8"), digest_size=4).hexdigest()
+
+
+def _models_dirs_from_env() -> list[Path]:
+    raw = os.environ.get("MODELS_DIRS")
+    if raw is None:
+        raw = str(Path.home() / "models")
+    dirs: list[Path] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        dirs.append(Path(part).expanduser())
+    # Convenience: also check for a local `nafnet-realestate/models/` folder.
+    local = (SCRIPT_DIR / "models").resolve()
+    if local not in dirs:
+        dirs.append(local)
+    return dirs
+
+
+def _discover_model_files(dirs: list[Path]) -> list[Path]:
+    found: list[Path] = []
+    for d in dirs:
+        try:
+            if not d.exists() or not d.is_dir():
+                continue
+        except Exception:
+            continue
+        for pat in ("*.pth", "*.pt"):
+            found.extend(sorted([p for p in d.glob(pat) if p.is_file()]))
+    # Deduplicate by resolved path.
+    uniq: dict[str, Path] = {}
+    for p in found:
+        try:
+            rp = str(p.resolve())
+        except Exception:
+            rp = str(p)
+        uniq[rp] = p
+    return sorted(uniq.values(), key=lambda p: (p.name, str(p)))
+
+
+def _register_model_path(path: Path, *, preferred_id: str | None = None) -> str:
+    path = path.expanduser()
+    try:
+        path = path.resolve()
+    except Exception:
+        pass
+    if not path.exists():
+        raise RuntimeError(f"Model not found: {path}")
+    if not path.is_file():
+        raise RuntimeError(f"Model path is not a file: {path}")
+
+    model_id = preferred_id or _safe_name(path.stem)
+
+    with STATE.lock:
+        existing = STATE.models.get(model_id)
+        if existing and Path(existing.checkpoint_path).resolve() != path:
+            model_id = f"{model_id}_{_short_hash(str(path))}"
+            existing = STATE.models.get(model_id)
+        if existing:
+            return existing.model_id
+        entry = ModelEntry(model_id=model_id, checkpoint_path=str(path), filename=path.name)
+        STATE.models[model_id] = entry
+        return model_id
+
+
+def _public_models_list() -> dict[str, Any]:
+    with STATE.lock:
+        models = [
+            {
+                "model_id": m.model_id,
+                "filename": m.filename,
+                "loaded": m.loaded,
+                "error": m.error,
+                "load_time_s": m.load_time_s,
+            }
+            for m in sorted(STATE.models.values(), key=lambda e: e.model_id)
+        ]
+        return {
+            "default_model": STATE.default_model_id,
+            "aliases": dict(STATE.model_aliases),
+            "models": models,
+        }
+
+
+def _is_allowed_model_path(path: Path) -> bool:
+    try:
+        rp = path.resolve()
+    except Exception:
+        rp = path
+    with STATE.lock:
+        dirs = list(STATE.models_dirs)
+        # Always allow the already-registered model paths.
+        registered = {Path(e.checkpoint_path) for e in STATE.models.values()}
+    for p in registered:
+        try:
+            if rp == p.resolve():
+                return True
+        except Exception:
+            if str(rp) == str(p):
+                return True
+    for d in dirs:
+        try:
+            if rp.is_relative_to(d.resolve()):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _resolve_model_id(requested: str) -> str:
+    key = (requested or "").strip()
+    if not key:
+        key = "default"
+
+    # Allow direct file path within allowed dirs (e.g. ~/models/foo.pth).
+    if "/" in key or key.startswith("~"):
+        p = Path(key).expanduser()
+        if not _is_allowed_model_path(p):
+            raise HTTPException(status_code=400, detail="Model path is not in an allowed models dir.")
+        model_id = _register_model_path(p)
+        return model_id
+
+    with STATE.lock:
+        if key in STATE.model_aliases:
+            key = STATE.model_aliases[key]
+        if key in STATE.models:
+            return key
+        # Match by filename if unique.
+        matches = [m.model_id for m in STATE.models.values() if m.filename == key]
+
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise HTTPException(status_code=400, detail=f"Ambiguous model name '{requested}'. Use model_id instead.")
+    raise HTTPException(status_code=400, detail=f"Unknown model '{requested}'. See GET /v1/models.")
+
+
+def _ensure_model_loaded(model_id: str) -> None:
+    with STATE.lock:
+        entry = STATE.models.get(model_id)
+        if not entry:
+            raise HTTPException(status_code=404, detail="model not found")
+        if entry.loaded:
+            return
+        if entry.error:
+            raise HTTPException(status_code=500, detail=f"model load failed: {entry.error}")
+        if entry.loading:
+            # Wait for the other loader to finish.
+            while entry.loading:
+                STATE.model_load_cond.wait(timeout=0.5)
+            if entry.loaded:
+                return
+            raise HTTPException(status_code=500, detail=f"model load failed: {entry.error or 'unknown error'}")
+        entry.loading = True
+        checkpoint_path = Path(entry.checkpoint_path)
+        channels_last = STATE.channels_last
+        cudnn_benchmark = STATE.cudnn_benchmark
+        device = STATE.device
+        gpu_slots = STATE.gpu_slots
+        warmup_iters = STATE.warmup_iters
+
+    # Load outside the lock (can take seconds).
+    models: list[Any] = []
+    t0 = time.perf_counter()
+    err: str | None = None
+    try:
+        for _ in range(gpu_slots):
+            m = _load_model(checkpoint_path, device, channels_last=channels_last, cudnn_benchmark=cudnn_benchmark)
+            models.append(m)
+        # Publish models into the pool.
+        with STATE.lock:
+            entry = STATE.models.get(model_id)
+            if not entry:
+                raise RuntimeError("model entry disappeared")
+            # If a previous failed load left items in the pool, clear it.
+            while not entry.pool.empty():
+                try:
+                    entry.pool.get_nowait()
+                except Exception:
+                    break
+            for m in models:
+                entry.pool.put(m)
+
+        # Warmup (best-effort) to reduce first-request latency.
+        if warmup_iters > 0:
+            try:
+                import numpy as np  # type: ignore
+
+                warm_shapes = {
+                    "1024": (768, 1024),
+                    "2048": (1536, 2048),
+                    "full": (2200, 3300),
+                }
+                for _tier, (h, w) in warm_shapes.items():
+                    img = (np.random.rand(h, w, 3) * 255).astype(np.uint8)
+                    for _ in range(warmup_iters):
+                        if device == "cuda":
+                            STATE.infer_semaphore.acquire()
+                        try:
+                            with STATE.lock:
+                                entry = STATE.models.get(model_id)
+                                if not entry:
+                                    raise RuntimeError("model entry disappeared")
+                                entry.last_used_ms = _now_ms()
+                            m = entry.pool.get()
+                            try:
+                                _ = _model_infer(m, device, img, channels_last=channels_last)
+                            finally:
+                                entry.pool.put(m)
+                        finally:
+                            if device == "cuda":
+                                STATE.infer_semaphore.release()
+            except Exception:
+                pass
+    except Exception as e:
+        err = str(e)
+    load_time_s = time.perf_counter() - t0
+
+    with STATE.lock:
+        entry = STATE.models.get(model_id)
+        if entry:
+            entry.loading = False
+            entry.load_time_s = load_time_s
+            entry.loaded_ms = _now_ms()
+            if err:
+                entry.error = err
+            else:
+                entry.loaded = True
+                entry.error = None
+        STATE.model_load_cond.notify_all()
+
+    if err:
+        raise HTTPException(status_code=500, detail=f"Failed to load model '{model_id}': {err}")
 
 
 def _model_infer(model: Any, device: str, img_bgr: Any, *, channels_last: bool) -> Any:
@@ -443,14 +721,27 @@ def _worker_loop(tier: Tier) -> None:
             item.trace.preprocess_ms = t_pre1 - t_pre0
             item.trace.t_preprocess_done_ms = _now_ms()
 
-            # Acquire a model slot for GPU work.
+            # Acquire a global infer slot + a model instance.
             item.trace.t_infer_start_ms = _now_ms()
             t_inf0 = _perf_ms()
-            model = STATE.model_pool.get()
+            with STATE.lock:
+                entry = STATE.models.get(item.model_id)
+                if entry:
+                    entry.last_used_ms = _now_ms()
+            if not entry or not entry.loaded:
+                raise RuntimeError(f"Model not loaded: {item.model_id}")
+
+            if STATE.device == "cuda":
+                STATE.infer_semaphore.acquire()
             try:
-                out_bgr = _model_infer(model, STATE.device, img, channels_last=STATE.channels_last)
+                model = entry.pool.get()
+                try:
+                    out_bgr = _model_infer(model, STATE.device, img, channels_last=STATE.channels_last)
+                finally:
+                    entry.pool.put(model)
             finally:
-                STATE.model_pool.put(model)
+                if STATE.device == "cuda":
+                    STATE.infer_semaphore.release()
             t_inf1 = _perf_ms()
             item.trace.infer_ms = t_inf1 - t_inf0
             item.trace.t_infer_end_ms = _now_ms()
@@ -597,7 +888,7 @@ def _startup() -> None:
     STATE.runs_dir = runs_dir
     STATE.runs_dir.mkdir(parents=True, exist_ok=True)
 
-    model_path = Path(
+    default_model_path = Path(
         os.environ.get(
             "TORCH_MODEL_PATH",
             str(SCRIPT_DIR / "BasicSR" / "experiments" / "NAFNet_RealEstate_Fast" / "models" / "net_g_12000.pth"),
@@ -607,48 +898,43 @@ def _startup() -> None:
     STATE.channels_last = os.environ.get("CHANNELS_LAST", "1") not in {"0", "false", "False"}
     STATE.cudnn_benchmark = os.environ.get("CUDNN_BENCHMARK", "0") not in {"0", "false", "False"}
     STATE.gpu_slots = max(1, int(os.environ.get("GPU_SLOTS", "1")))
-    warmup_iters = max(0, int(os.environ.get("WARMUP_ITERS", "2")))
+    STATE.warmup_iters = max(0, int(os.environ.get("WARMUP_ITERS", "2")))
+    STATE.infer_semaphore = threading.Semaphore(STATE.gpu_slots)
 
-    if not model_path.exists():
-        raise RuntimeError(f"Model not found: {model_path}")
+    if not default_model_path.exists():
+        raise RuntimeError(f"Model not found: {default_model_path}")
 
-    print(f"[startup] device={STATE.device} gpu_slots={STATE.gpu_slots} channels_last={STATE.channels_last}", file=sys.stderr)
-    print(f"[startup] runs_dir={STATE.runs_dir}", file=sys.stderr)
-    print(f"[startup] loading model: {model_path}", file=sys.stderr)
-    t0 = time.perf_counter()
-    for _ in range(STATE.gpu_slots):
-        m = _load_model(
-            model_path,
-            STATE.device,
-            channels_last=STATE.channels_last,
-            cudnn_benchmark=STATE.cudnn_benchmark,
-        )
-        STATE.model_pool.put(m)
-    print(f"[startup] loaded {STATE.gpu_slots} model(s) in {time.perf_counter()-t0:.2f}s", file=sys.stderr)
+    # Register models (default + any in MODELS_DIRS / local models folder).
+    STATE.models_dirs = _models_dirs_from_env()
+    discovered = _discover_model_files(STATE.models_dirs)
 
-    # Warmup (synthetic sizes) to reduce first-request latency.
-    try:
-        import numpy as np  # type: ignore
+    default_id = _register_model_path(default_model_path, preferred_id=_safe_name(default_model_path.stem))
+    with STATE.lock:
+        STATE.default_model_id = default_id
+        STATE.model_aliases.setdefault("default", default_id)
 
-        warm_shapes = {
-            "1024": (768, 1024),
-            "2048": (1536, 2048),
-            "full": (2200, 3300),
-        }
-        for tier, (h, w) in warm_shapes.items():
-            if warmup_iters <= 0:
+    for p in discovered:
+        try:
+            if p.resolve() == default_model_path.resolve():
                 continue
-            img = (np.random.rand(h, w, 3) * 255).astype(np.uint8)
-            for _ in range(warmup_iters):
-                # Use one model from pool for warmup, then return.
-                m = STATE.model_pool.get()
-                try:
-                    _ = _model_infer(m, STATE.device, img, channels_last=STATE.channels_last)
-                finally:
-                    STATE.model_pool.put(m)
-        print("[startup] warmup done", file=sys.stderr)
-    except Exception as e:
-        print(f"[startup] warmup skipped: {e}", file=sys.stderr)
+        except Exception:
+            if str(p) == str(default_model_path):
+                continue
+        try:
+            _register_model_path(p)
+        except Exception:
+            continue
+
+    print(
+        f"[startup] device={STATE.device} gpu_slots={STATE.gpu_slots} channels_last={STATE.channels_last} cudnn_benchmark={STATE.cudnn_benchmark}",
+        file=sys.stderr,
+    )
+    print(f"[startup] runs_dir={STATE.runs_dir}", file=sys.stderr)
+    print(f"[startup] default_model={STATE.default_model_id} (from TORCH_MODEL_PATH)", file=sys.stderr)
+    print(f"[startup] discovered_models={len(discovered)} dirs={','.join(str(d) for d in STATE.models_dirs)}", file=sys.stderr)
+    print(f"[startup] loading default model '{STATE.default_model_id}' ...", file=sys.stderr)
+    _ensure_model_loaded(STATE.default_model_id)
+    print("[startup] default model ready", file=sys.stderr)
 
     # Start worker threads.
     for tier in ("1024", "2048", "full"):
@@ -687,8 +973,44 @@ def tiers() -> dict[str, Any]:
     }
 
 
+@APP.get("/v1/models", response_model=ModelsListModel)
+def list_models() -> dict[str, Any]:
+    return _public_models_list()
+
+
+@APP.post("/v1/models/rescan", response_model=ModelsListModel)
+def rescan_models() -> dict[str, Any]:
+    # Re-scan configured model dirs and register new model files (does not unload existing).
+    with STATE.lock:
+        dirs = list(STATE.models_dirs)
+    for p in _discover_model_files(dirs):
+        try:
+            _register_model_path(p)
+        except Exception:
+            continue
+    return _public_models_list()
+
+
+@APP.post("/v1/models/{model}/load", response_model=ModelPublicModel)
+def load_model(model: str) -> dict[str, Any]:
+    model_id = _resolve_model_id(model)
+    _ensure_model_loaded(model_id)
+    with STATE.lock:
+        entry = STATE.models.get(model_id)
+        if not entry:
+            raise HTTPException(status_code=404, detail="model not found")
+        return {
+            "model_id": entry.model_id,
+            "filename": entry.filename,
+            "loaded": entry.loaded,
+            "error": entry.error,
+            "load_time_s": entry.load_time_s,
+        }
+
+
 @APP.post("/v1/jobs", response_model=JobPublicModel)
 async def create_job(
+    model: str = Form("default"),
     tier: Tier = Form("1024"),
     jpeg_quality: int = Form(95),
     images: list[UploadFile] | None = File(None),
@@ -704,6 +1026,9 @@ async def create_job(
     if jpeg_quality < 50 or jpeg_quality > 100:
         raise HTTPException(status_code=400, detail="jpeg_quality must be 50..100")
 
+    model_id = _resolve_model_id(model)
+    _ensure_model_loaded(model_id)
+
     job_id = uuid.uuid4().hex
     job_dir = STATE.runs_dir / job_id
     inputs_dir = job_dir / "inputs"
@@ -715,6 +1040,7 @@ async def create_job(
     job = Job(
         job_id=job_id,
         created_ms=created_ms,
+        model_id=model_id,
         tier=tier,
         jpeg_quality=jpeg_quality,
         out_dir=str(job_dir),
@@ -741,7 +1067,7 @@ async def create_job(
     with STATE.lock:
         STATE.jobs[job_id] = job
 
-    STATE.push_event(job_id, {"type": "job_created", "tier": tier, "count": len(saved_paths)})
+    STATE.push_event(job_id, {"type": "job_created", "tier": tier, "model_id": model_id, "count": len(saved_paths)})
 
     for p in saved_paths:
         item_id = uuid.uuid4().hex
@@ -749,6 +1075,7 @@ async def create_job(
         item = Item(
             item_id=item_id,
             job_id=job_id,
+            model_id=model_id,
             filename=p.name,
             tier=tier,
             jpeg_quality=jpeg_quality,
