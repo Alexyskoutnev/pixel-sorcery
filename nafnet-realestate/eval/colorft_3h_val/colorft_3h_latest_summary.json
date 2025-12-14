@@ -1,0 +1,70 @@
+{
+  "backend": "torch",
+  "total_images": 57,
+  "baseline_rss_mb": 16.6875,
+  "splits": {
+    "val": {
+      "images": 57,
+      "timing_total_s": {
+        "count": 57.0,
+        "min": 2.8758166289990186,
+        "p50": 3.506702139005938,
+        "p90": 3.5136100729941973,
+        "max": 3.6906406140042236,
+        "mean": 3.4862112558242333
+      },
+      "timing_inference_s": {
+        "count": 57.0,
+        "min": 2.8082886490010424,
+        "p50": 3.4271280609973473,
+        "p90": 3.4328051449992927,
+        "max": 3.438191960005497,
+        "mean": 3.3978696007543476
+      },
+      "rss_before_mb": {
+        "count": 57.0,
+        "min": 1284.1171875,
+        "p50": 1430.6875,
+        "p90": 1472.04296875,
+        "max": 1555.51953125,
+        "mean": 1429.931332236842
+      },
+      "rss_after_mb": {
+        "count": 57.0,
+        "min": 1326.92578125,
+        "p50": 1430.6953125,
+        "p90": 1472.1875,
+        "max": 1513.9296875,
+        "mean": 1430.9952028508771
+      },
+      "rss_peak_during_infer_mb": {
+        "count": 57.0,
+        "min": 1408.98828125,
+        "p50": 1514.25390625,
+        "p90": 1575.9609375,
+        "max": 1639.0078125,
+        "mean": 1524.6409676535088
+      },
+      "psnr_pred_gt": {
+        "count": 57.0,
+        "min": 16.27460079441962,
+        "p50": 21.42451258622241,
+        "p90": 24.538472109419427,
+        "max": 27.657936849772735,
+        "mean": 21.608931678177626
+      }
+    }
+  },
+  "output_dir": "dataset_triptychs/torch/torch/colorft_3h_latest_val",
+  "dataset_root": "datasets/realestate",
+  "selected_splits": [
+    "val"
+  ],
+  "load_time_s": 1.6781644570000935,
+  "ram_sample_ms": 25,
+  "model_rss_mb": 895.37890625,
+  "peak_rss_seen_mb": 1513.9296875,
+  "elapsed_wall_s": 212.22120053899562,
+  "torch_model": "BasicSR/experiments/NAFNet_RealEstate_ColorFT_3h/models/net_g_latest.pth",
+  "torch_device": "cuda"
+}

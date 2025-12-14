@@ -28,19 +28,21 @@ def export_to_onnx(
     width: int = 32,
     input_size: tuple = (1, 3, 512, 512),
     opset_version: int = 17,
-    dynamic_axes: bool = True
+    dynamic_axes: bool = True,
+    fp16: bool = False,
 ):
     """Export NAFNet model to ONNX format."""
-    
-    # Add NAFNet to path
-    nafnet_path = Path(__file__).parent.parent / "NAFNet"
-    if str(nafnet_path) not in sys.path:
-        sys.path.insert(0, str(nafnet_path))
-    
+
+    # Add BasicSR to path (local checkout under `nafnet-realestate/BasicSR`)
+    project_root = Path(__file__).resolve().parents[2]
+    basicsr_root = project_root / "BasicSR"
+    if str(basicsr_root) not in sys.path:
+        sys.path.insert(0, str(basicsr_root))
+
     from basicsr.archs.NAFNet_arch import NAFNet
-    
+
     print(f"Loading model: {model_path}")
-    
+
     # Create model
     model = NAFNet(
         img_channel=3,
@@ -49,7 +51,7 @@ def export_to_onnx(
         enc_blk_nums=[2, 2, 4, 8],
         dec_blk_nums=[2, 2, 2, 2]
     )
-    
+
     # Load weights
     checkpoint = torch.load(model_path, map_location='cpu')
     if 'params' in checkpoint:
@@ -58,12 +60,16 @@ def export_to_onnx(
         model.load_state_dict(checkpoint['params_ema'])
     else:
         model.load_state_dict(checkpoint)
-    
+
     model.eval()
-    
+    if fp16:
+        model = model.half()
+
     # Create dummy input
     dummy_input = torch.randn(*input_size)
-    
+    if fp16:
+        dummy_input = dummy_input.half()
+
     # Configure dynamic axes
     if dynamic_axes:
         dynamic_axes_config = {
@@ -72,11 +78,12 @@ def export_to_onnx(
         }
     else:
         dynamic_axes_config = None
-    
+
     print(f"Exporting to ONNX (opset {opset_version})...")
     print(f"  Input shape: {input_size}")
     print(f"  Dynamic axes: {dynamic_axes}")
-    
+    print(f"  DType: {'fp16' if fp16 else 'fp32'}")
+
     # Export
     torch.onnx.export(
         model,
@@ -134,7 +141,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Export NAFNet model to ONNX format"
     )
-    
+
     parser.add_argument('--model', '-m', required=True, help='Model checkpoint path')
     parser.add_argument('--output', '-o', default='nafnet_realestate.onnx', help='Output ONNX path')
     parser.add_argument('--width', type=int, default=32, help='NAFNet width (default: 32)')
@@ -142,10 +149,11 @@ def main():
                         help='Input size: batch channels height width')
     parser.add_argument('--opset', type=int, default=17, help='ONNX opset version')
     parser.add_argument('--static', action='store_true', help='Use static input size (no dynamic axes)')
+    parser.add_argument('--fp16', action='store_true', help='Export FP16 ONNX weights/ops (experimental)')
     parser.add_argument('--tensorrt', action='store_true', help='Print TensorRT conversion command')
-    
+
     args = parser.parse_args()
-    
+
     print("=" * 60)
     print("  NAFNet ONNX Export")
     print("=" * 60)
@@ -157,7 +165,8 @@ def main():
         width=args.width,
         input_size=tuple(args.input_size),
         opset_version=args.opset,
-        dynamic_axes=not args.static
+        dynamic_axes=not args.static,
+        fp16=args.fp16,
     )
     
     # TensorRT instructions
