@@ -29,9 +29,9 @@ datasets:
     type: PairedImageDataset
     phase: train
 
-    # Paths to your prepared dataset (absolute paths)
-    dataroot_gt: /home/asus/sebastian/pixel-sorcery/pix2pix-train-v1/datasets/realestate/train/gt
-    dataroot_lq: /home/asus/sebastian/pixel-sorcery/pix2pix-train-v1/datasets/realestate/train/lq
+    # Paths to your prepared dataset (relative to `nafnet-realestate/`)
+    dataroot_gt: datasets/realestate/train/gt
+    dataroot_lq: datasets/realestate/train/lq
 
     # Scale factor (1 = no upscaling, image enhancement only)
     scale: 1
@@ -61,8 +61,8 @@ datasets:
     name: RealEstate_Val
     type: PairedImageDataset
     phase: val
-    dataroot_gt: /home/asus/sebastian/pixel-sorcery/pix2pix-train-v1/datasets/realestate/val/gt
-    dataroot_lq: /home/asus/sebastian/pixel-sorcery/pix2pix-train-v1/datasets/realestate/val/lq
+    dataroot_gt: datasets/realestate/val/gt
+    dataroot_lq: datasets/realestate/val/lq
     scale: 1
     io_backend:
       type: disk
@@ -83,9 +83,9 @@ network_g:
 # ============================================================
 path:
   # Using pretrained weights for transfer learning (recommended per whitepaper)
-  pretrain_network_g: /home/asus/sebastian/pixel-sorcery/pix2pix-train-v1/pretrained/NAFNet-SIDD-width32.pth
+  pretrain_network_g: pretrained/NAFNet-SIDD-width32.pth
   strict_load_g: true  # Architecture matches exactly (width=32)
-  resume_state: /home/asus/sebastian/pixel-sorcery/pix2pix-train-v1/BasicSR/experiments/NAFNet_RealEstate_Fast/training_states/4000.state
+  resume_state: ~
 
 # ============================================================
 # Training Configuration
