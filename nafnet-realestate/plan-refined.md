@@ -1,0 +1,725 @@
+# Retraining Plan & Context Snapshot (NAFNet Real Estate) — Color Fidelity Focus
+
+This document captures the current state of the `nafnet-realestate` project, how the model is trained today, what we’ve observed about the “color drift / repainting” failures, and a concrete (repo-compatible) plan for improving color fidelity while staying within the GB10 (~5–6 hour) training budget.
+
+It’s intended to be a durable “single source of truth” so you can review/answer open questions and we can execute the retraining with minimal ambiguity.
+
+---
+
+## Revised constraints (your latest note)
+
+You clarified that we **don’t** have the +200–300 new pairs we hoped for. Instead:
+- You can provide **a few** additional pairs.
+- You will provide a small set of **curated failures** (LQ input + “bad” model output + GT), so we can focus on the color failure mode.
+- We have a hard runtime budget of **~3 hours** for the next training run.
+
+This doc still contains the full “big plan”, but the sections below describe the **immediate 3-hour execution plan** we should run now.
+
+---
+
+## 3-hour execution plan (minimal data, color emphasis)
+
+### Goal
+Reduce “repaint” failures (blue/green/teal walls getting washed out) with the least risk of breaking overall enhancement quality, under a ~3 hour budget.
+
+### Strategy (what changes, what stays)
+Keep:
+- Same NAFNet width-32 architecture.
+- Same patch training setup (`gt_size: 256`, `batch_size: 20`) because it already hits good throughput.
+- Same perceptual loss (small weight) to preserve overall “look”.
+
+Change:
+- Replace `pixel_opt: L1Loss` with a **color-aware pixel loss** that adds a masked chroma constraint in YCbCr space.
+  - This is designed to emphasize color fidelity only where GT is actually colorful (so it doesn’t fight neutral regions).
+- Fine-tune from the current best weights (`net_g_12000.pth`) with a fresh optimizer (no `resume_state`).
+- Limit the run to ~4,500–5,000 iterations to fit the budget (based on observed ~2.05s/iter + validation overhead).
+
+### Why YCbCr chroma constraint (first)
+- No new dependencies needed.
+- Directly targets saturation collapse (Cb/Cr drift toward 0.5 when things wash out).
+- Easy to mask so we only “push” on high-chroma GT pixels.
+
+If this is insufficient, the next escalation would be MS-SSIM or Lab-based loss terms (but those add dependencies and complexity).
+
+### How we’ll incorporate your “curated failures”
+Once you drop in the failure examples, we’ll:
+- Build a small “color stress” validation subset for quick checks.
+- Optionally **oversample** those specific pairs in training (via a `meta_info_file` with repeated filenames, rather than duplicating files).
+
+### What you will run
+After the code changes land, the intended entrypoint is a single script:
+- `nafnet-realestate/nafnet_realestate_pipeline/scripts/08_train_color_finetune_3h.sh`
+
+It will:
+1) Apply the “color loss patch” into the local BasicSR checkout (so training can use it without forking BasicSR).
+2) Run a fine-tune config sized to the 3-hour window.
+
+## 0) Tooling note (Exa MCP)
+
+Exa research tooling is working now, and I used it to validate the loss/augmentation/evaluation recommendations against standard references in image restoration and color science.
+
+Core sources referenced in this doc:
+- NAFNet paper (architecture background): https://arxiv.org/abs/2204.04676
+- “Loss Functions for Image Restoration with Neural Networks” (SSIM/MS-SSIM as loss, mixed objectives): https://arxiv.org/abs/1511.08861
+- CIEDE2000 implementation notes + pitfalls/discontinuities (important if we use ΔE00): http://www.ece.rochester.edu/~gsharma/ciede2000/ciede2000noteCRNA.pdf
+- Kornia MS-SSIM(+L1) loss reference implementation: https://kornia.readthedocs.io/en/v0.6.7/_modules/kornia/losses/ms_ssim.html
+- `pytorch-msssim` (fast differentiable SSIM/MS-SSIM): https://github.com/VainF/pytorch-msssim
+- Augmentation analysis for restoration tasks (useful guardrails, especially for paired supervision): https://openaccess.thecvf.com/content_CVPR_2020/papers/Yoo_Rethinking_Data_Augmentation_for_Image_Super-resolution_A_Comprehensive_Analysis_and_CVPR_2020_paper.pdf
+
+---
+
+## 1) Project snapshot (what exists today)
+
+### What the model does
+Paired image-to-image enhancement of real estate photos: **before (LQ)** → **after (GT)** “professionally edited” target images.
+
+### Where the project lives in this repo
+Top-level repository: `pixel-sorcery/`
+
+The training + model assets are inside:
+- `nafnet-realestate/` (this is the project root for the NAFNet real-estate work)
+
+### Dataset currently in this repo
+Paired dataset exists locally at:
+- `nafnet-realestate/datasets/realestate/train/{lq,gt}` with **520** pairs
+- `nafnet-realestate/datasets/realestate/val/{lq,gt}` with **57** pairs
+
+### Trained checkpoints present
+Training artifacts exist at:
+- `nafnet-realestate/BasicSR/experiments/NAFNet_RealEstate_Fast/models/`
+  - `net_g_2000.pth, 4000, 6000, 8000, 10000, 12000, latest`
+- `nafnet-realestate/BasicSR/experiments/NAFNet_RealEstate_Fast/training_states/`
+  - `2000.state … 12000.state`
+- Validation visualization snapshots exist at:
+  - `nafnet-realestate/BasicSR/experiments/NAFNet_RealEstate_Fast/visualization/####/`
+
+### Constraints you provided
+- Hardware: **NVIDIA GB10**, **128 GB unified memory**
+- Baseline training: **12,000 iterations** took **~5–6 hours**
+- Desired retrain loop: keep runs **~≤5 hours** when possible
+- Goal: fix **color failures** (“walls look repainted”, blue/green → mint/white/washed-out), without breaking the overall enhancement quality.
+- Planned new data: target **~300 new pairs** (maybe 100–200 if constrained), and expand train/val/test.
+
+---
+
+## 2) Repository map & “what runs what”
+
+### Key directories
+- `nafnet-realestate/BasicSR/`
+  - A vendored BasicSR fork used for training + logging + experiments.
+  - Training entrypoint (in this fork): `nafnet-realestate/BasicSR/basicsr/train.py`
+  - Model used for training: `ImageRestorationModel` (`nafnet-realestate/BasicSR/basicsr/models/image_restoration_model.py`)
+- `nafnet-realestate/NAFNet/`
+  - A vendored NAFNet repo (original structure), also includes a `basicsr/` folder (separate from `nafnet-realestate/BasicSR/basicsr/`).
+- `nafnet-realestate/nafnet_realestate_pipeline/`
+  - “Pipeline” scripts/docs intended to automate setup/train/infer/export.
+  - Note: some paths/scripts still reference an older workspace layout (see “Path consistency” below).
+- `nafnet-realestate/inference.py`
+  - Standalone inference script (loads NAFNet width=32 and runs on images).
+
+### Current “source of truth” training configuration
+There are two configs that matter:
+- `nafnet-realestate/nafnet_realestate_pipeline/configs/nafnet_fast.yml`
+  - Human-authored “pipeline” config (but contains absolute paths to an older layout).
+- `nafnet-realestate/BasicSR/experiments/NAFNet_RealEstate_Fast/nafnet_fast.yml`
+  - Auto-generated copy of the config used in training (header shows it was generated by running `BasicSR/basicsr/train.py -opt nafnet_realestate_pipeline/configs/nafnet_fast.yml`).
+
+### Path consistency (important for reproducibility)
+The configs and some scripts reference an older directory `pix2pix-train-v1/` which is **not present** in this repo workspace. Example:
+- `nafnet-realestate/nafnet_realestate_pipeline/configs/nafnet_fast.yml` points dataset + pretrained + resume_state into `/home/asus/sebastian/pixel-sorcery/pix2pix-train-v1/...`
+
+Meanwhile, the actual dataset currently present is:
+- `nafnet-realestate/datasets/realestate/...`
+and pretrained weights are present at:
+- `nafnet-realestate/pretrained/NAFNet-SIDD-width32.pth`
+
+Action item: before retraining, we should produce a clean “current workspace” config that uses the paths inside `nafnet-realestate/` (relative paths preferred).
+
+---
+
+## 3) Model architecture (exactly what we trained)
+
+### Architecture: NAFNet (width=32)
+Implementation used by inference and training exists at:
+- `nafnet-realestate/BasicSR/basicsr/archs/NAFNet_arch.py`
+
+Key facts:
+- U-Net style encoder/decoder with skip connections
+- Residual formulation: output adds back the input (`x = x + inp`)
+- Pads input to a multiple of `2 ** #encoder_stages` (here 4 encoder stages → multiple of 16)
+
+### The exact config used (width=32)
+From the training config:
+```yaml
+network_g:
+  type: NAFNet
+  img_channel: 3
+  width: 32
+  middle_blk_num: 12
+  enc_blk_nums: [2, 2, 4, 8]
+  dec_blk_nums: [2, 2, 2, 2]
+```
+
+
+### Why the padding multiple matters
+NAFNet downsamples 4 times (because `enc_blk_nums` has 4 stages). That makes the “padder size”:
+```py
+self.padder_size = 2 ** len(self.encoders)  # 16
+```
+So any inference image is padded to a multiple of 16 spatially, processed, then cropped back.
+
+### Important implication for “color issues”
+This is not a patch seam issue: the model is fully convolutional with skip connections + residual input add. “Walls look repainted” is almost certainly a **learned color mapping** issue, not an artifact of tiling/padding.
+
+---
+
+## 4) Baseline training (what we’ve done so far)
+
+### Iterations vs “epochs” (terminology sanity)
+BasicSR trains primarily in **iterations** (`total_iter`), not epochs.
+
+With your current settings:
+- train pairs: 520
+- `dataset_enlarge_ratio: 50` → effective dataset length per epoch: `520 * 50 = 26,000`
+- `batch_size_per_gpu: 20` → iterations per epoch: `26,000 / 20 = 1,300`
+- `total_iter: 12,000` → ~`12,000 / 1,300 ≈ 9.2` “epochs”
+
+So when we say “12,000”, it’s **12k iterations** (not 12k epochs).
+
+### Trainer model type: `ImageRestorationModel`
+Training model is defined here:
+- `nafnet-realestate/BasicSR/basicsr/models/image_restoration_model.py`
+
+Important constraint:
+- It only builds **two** losses from config:
+  - `train.pixel_opt` and `train.perceptual_opt`
+
+So config keys like `ssim_opt` / `lab_color_opt` / `chroma_opt` will be **ignored** unless we change code or wrap them into a single composite loss.
+
+### Dataset loader: `PairedImageDataset`
+Loader reads image pairs (BGR via OpenCV), converts to RGB tensors, and does:
+- random paired crop
+- paired geometric augmentation (flip/rotate)
+
+Implementation:
+- `nafnet-realestate/BasicSR/basicsr/data/paired_image_dataset.py`
+
+### Baseline augmentation (already present)
+From config:
+```yaml
+use_hflip: true
+use_rot: true
+gt_size: 256
+```
+BasicSR’s `augment()` implements:
+- random horizontal flip (p=0.5)
+- random vertical flip (p=0.5)
+- random transpose (rot90) (p=0.5)
+
+This yields up to 8 dihedral transforms. These are applied identically to LQ+GT.
+
+### Baseline optimizer/schedule
+From config:
+```yaml
+optim_g:
+  type: AdamW
+  lr: 1e-3
+  weight_decay: 1e-4
+  betas: [0.9, 0.9]
+
+scheduler:
+  type: CosineAnnealingRestartLR
+  periods: [12000]
+  restart_weights: [1]
+  eta_min: 1e-7
+
+total_iter: 12000
+warmup_iter: 200
+```
+
+### Baseline losses (what actually trained)
+From config:
+```yaml
+pixel_opt:
+  type: L1Loss
+  loss_weight: 1.0
+perceptual_opt:
+  type: PerceptualLoss
+  vgg_type: vgg19
+  perceptual_weight: 0.1
+```
+
+### Optimization detail worth knowing: gradient clipping is very aggressive
+Inside `optimize_parameters()`, the trainer clips gradients:
+- `torch.nn.utils.clip_grad_norm_(..., 0.01)`
+
+That’s a **very small** clip threshold. It can be fine for stability, but when we add new color losses, it can also slow adaptation (especially if the new term produces larger gradients early on). We should keep this in mind if fine-tuning feels “stuck”.
+
+### Validation
+Validation computed:
+- `PSNR` and `SSIM` over RGB (`test_y_channel: false`)
+Saved sample images into `visualization/####/`.
+
+### Observed baseline val metrics (from training logs)
+From `train_NAFNet_RealEstate_Fast_20251213_135126.log`:
+- iter 6000: PSNR ~21.54, SSIM ~0.8964
+- iter 8000: PSNR ~21.59, SSIM ~0.8966
+- iter 12000: PSNR ~21.69, SSIM ~0.8968
+
+---
+
+## 5) The color failure: what it looks like & why it likely happens
+
+### Symptom (as you described)
+On some images (especially when enhancement increases contrast/exposure), certain painted surfaces:
+- lose saturation,
+- drift hue,
+- or “wash out” toward gray/white,
+to the point it looks like the walls were repainted.
+
+This is most noticeable on **strong paint colors** (blue/green/teal) and other high-chroma regions.
+
+### Concrete example (from saved val visualization)
+Example where GT wall is clearly blue, but output is noticeably more gray:
+- `nafnet-realestate/BasicSR/experiments/NAFNet_RealEstate_Fast/visualization/0017/0017_12000.png`
+- `nafnet-realestate/BasicSR/experiments/NAFNet_RealEstate_Fast/visualization/0017/0017_12000_gt.png`
+
+### Why this can happen even with L1 + perceptual
+Even though L1 “should” preserve colors, in practice:
+- Many pixels in interiors are low-chroma neutrals (whites, grays, beige).
+- High-chroma regions (painted walls) can occupy a small fraction of pixels.
+- A model can improve global exposure/contrast and still reduce chroma in those regions while keeping overall L1 acceptable.
+- Perceptual loss (VGG features) tends to emphasize structure/texture; color can be underweighted.
+
+Additionally, professional editing styles often include:
+- exposure/contrast curves,
+- highlight compression,
+- white balance correction,
+which can correlate with changes in saturation. The model may learn the correlation but occasionally over-applies it, especially out-of-distribution.
+
+### A quick empirical check (supports “only some images”)
+I computed simple HSV/LAB metrics on the saved 57 validation visualizations for checkpoints 4000–12000.
+
+Key finding:
+- Over the **whole image**, the mean saturation ratio is ~1.0 (looks “fine”).
+- But if you measure only **pixels where GT saturation is high**, the model tends to under-saturate (sat ratio < 1).
+
+Downsampled estimates on val visualizations (iter 12000):
+- On pixels where **GT saturation ≥ 60**: avg saturation ratio ≈ **0.77**
+- On pixels where **GT saturation ≥ 100**: avg saturation ratio ≈ **0.81**
+
+That matches your observation: the failure is not universal; it shows up when a scene contains meaningful high-chroma areas and the enhancement pushes contrast/exposure.
+
+---
+
+## 6) Retraining goal (what “success” should mean)
+
+You clarified:
+- You do **not** need a perfect pixel-identical copy of GT.
+- The model is already “good overall” — the issue is color fidelity on certain cases.
+- You want to keep wall paint looking like the same paint, even as lighting/contrast improves.
+- Small global shifts (e.g., temperature) are OK; “repainted” is not.
+
+Practical operational definition of success (suggested):
+1) **No large hue shifts** in painted-wall regions.
+2) **No major saturation collapse** in regions where GT is saturated.
+3) Preserve the baseline enhancement behavior elsewhere (avoid regressions).
+
+---
+
+## 7) The retraining plan (repo-compatible, under ~5 hours)
+
+This is the “doable next step” plan given how BasicSR is wired today.
+
+### Step A — Data changes (highest ROI)
+You’re aiming for +100–300 new pairs. The most important property is **coverage of the failure mode**:
+- homes with bold wall paints (blue/green/teal)
+- scenes where exposure/contrast enhancement is needed *and* color must stay faithful
+- mixed lighting and shadowed corners (where chroma often collapses)
+
+#### How to split new data
+To preserve comparability while adding new stress tests:
+- Keep the existing `57` val pairs as a “baseline regression set”.
+- Create an additional **color-stress validation set** (new folder) with ~25–75 pairs biased toward bold paint colors.
+- Keep a small “test” set of real-world unseen images you never train on (even 20–50 images is useful).
+
+Recommended (if you get ~300 new pairs):
+- Train: +240
+- Val (baseline unchanged): keep current 57
+- Val (color-stress): +30–60
+- Test (unseen): +20–50
+
+If you only get ~100 new pairs:
+- Train: +70
+- Val (color-stress): +15
+- Test (unseen): +15
+
+#### Important: don’t “inflate” dataset by saving lots of flipped copies on disk
+You already have strong on-the-fly augmentation (random crops + flips/rot90). Writing flipped duplicates to disk usually just:
+- bloats storage,
+- complicates bookkeeping,
+without giving you much additional diversity (because crops already provide huge diversity).
+
+### Step B — Loss changes (without breaking the current trainer)
+
+#### Critical constraint in current code
+`ImageRestorationModel` only supports:
+- `train.pixel_opt`
+- `train.perceptual_opt`
+
+So the plan in `re-train.plan` that adds `ssim_opt`, `lab_color_opt`, etc. won’t execute unless we:
+1) **Implement a composite pixel loss** (recommended), or
+2) Modify the trainer to support multiple loss entries.
+
+#### Recommended approach: composite “color-aware pixel loss”
+We keep `perceptual_opt` as-is, and replace `pixel_opt: L1Loss` with a new `pixel_opt: ColorAwareLoss` that internally computes:
+- RGB L1 (keeps baseline behavior)
+- a chroma-preserving term (to stop wall paint washout)
+- optionally SSIM/MS-SSIM (to stabilize luminance/contrast structure)
+
+This requires *minimal* changes to the BasicSR code and keeps the config simple.
+
+##### Option B1 (no new dependencies): YCbCr-based chroma constraints
+Pros:
+- We already have a torch YCbCr conversion helper: `rgb2ycbcr_pt` in `nafnet-realestate/BasicSR/basicsr/utils/color_util.py`
+- Easy to implement and differentiable
+
+Concept:
+- Convert pred/gt RGB → YCbCr
+- Treat chroma vector as `u = Cb-0.5`, `v = Cr-0.5`
+- Penalize:
+  - magnitude difference (prevents saturation collapse)
+  - angular difference (prevents hue drift) — optional but useful
+
+This directly targets your “mint/white repaint” failure mode.
+
+##### Option B2 (adds dependencies): LAB ΔE / SSIM via Kornia or pytorch-msssim
+Pros:
+- LAB is a closer match to perceptual color differences.
+- MS-SSIM loss is widely used and stable.
+
+Cons:
+- Adds training-only dependencies (installation complexity).
+- Doesn’t affect inference, but does affect “setup cost”.
+
+Given your concerns, I recommend starting with **Option B1** and only adding dependencies if needed.
+
+### Step C — Training schedule (how to stay under ~5 hours)
+
+#### Key concept: “resume training” vs “fine-tune from weights”
+These are different in BasicSR:
+
+1) **Resume training** (`resume_state: .../12000.state`)
+   - Restores optimizer + scheduler + iter counter.
+   - Good if you are continuing exactly the same setup.
+   - Risky if you change loss terms: you inherit optimizer dynamics that were tuned for the old objective.
+   - Also: at iter 12000 your cosine schedule is near `eta_min` (very small LR), which can make fine-tuning painfully slow.
+
+2) **Fine-tune from weights** (`pretrain_network_g: ...net_g_12000.pth`, `resume_state: ~`)
+   - Loads weights, but starts a fresh optimizer/scheduler.
+   - This is usually what you want when you add new loss terms.
+
+Recommendation for this project:
+- Use **fine-tune from weights** (start fresh optimizer) when adding new color-aware losses.
+
+#### Suggested run structure (fast iteration)
+Stage 1 (quick):
+- Start from `net_g_12000.pth` (weights)
+- Run +3000 to +6000 iterations with:
+  - lower LR (e.g., 2e-4)
+  - more frequent validation (every 500–1000 iters)
+- Evaluate on:
+  - baseline val
+  - color-stress val
+  - your hand-picked failure examples
+
+Stage 2 (only if needed):
+- Continue to ~+8000 iterations (target 20000 total if starting from 12000)
+- Stop when color metrics plateau and you’re happy visually.
+
+This fits your “check at 12k, then extend to 15k/20k” workflow.
+
+---
+
+## 8) Extra losses: “support in trainer” vs “keep isolated” (what it means)
+
+You asked: what does it mean to “support extra losses” vs “keep it isolated”, and how does it affect things?
+
+### Option 1 — Keep it isolated (recommended first)
+**Meaning:** Don’t change `ImageRestorationModel` to accept multiple loss keys. Instead, create one new loss class used in `pixel_opt` that internally combines components (L1 + chroma + SSIM, etc.).
+
+**Pros**
+- Minimal code surface area changes.
+- Keeps training wiring stable.
+- Easier to maintain and less likely to break other configs.
+
+**Cons**
+- Less flexible experimentation in YAML (you tweak weights inside the composite loss config).
+- Logging individual sub-losses requires extra effort (you can still do it, but you need to emit a dict or separate logging hook).
+
+### Option 2 — Add native support for multiple losses
+**Meaning:** Modify `ImageRestorationModel` to build and sum additional loss objects from config keys like `ssim_opt`, `color_opt`, etc.
+
+**Pros**
+- Clean YAML configs with separate weights.
+- Easier ablations (“turn on/off loss terms”).
+- Easier per-loss logging to TensorBoard.
+
+**Cons**
+- More invasive code change in the training core.
+- More places to keep consistent with future updates/variants.
+
+### Recommendation (given your goal and timeline)
+Start with **Option 1 (isolated composite loss)**:
+- It solves the immediate “trainer only supports pixel+perceptual” constraint.
+- It’s the fastest path to iterate on color fidelity.
+
+If we find ourselves iterating heavily on loss combinations and wanting cleaner logging/ablation, then we can graduate to Option 2.
+
+---
+
+## 9) Augmentation strategy (geometric + “manipulated images”)
+
+### What you already have (and why it matters)
+Your dataset is only ~520 pairs, but the training is patch-based:
+- each iteration samples random crops,
+- plus random flip/rot augmentations.
+
+That means you already get “effectively many” training examples without writing synthetic images to disk.
+
+#### Why “making more images by flipping” is usually unnecessary here (the math)
+Even ignoring flips/rotations, random crops alone give a *massive* number of unique training patches.
+
+For a typical 3300×2200 image and `gt_size=256`, the number of possible top-left crop positions is:
+- `(3300 - 256 + 1) * (2200 - 256 + 1) = 3045 * 1945 ≈ 5.9 million` possible crops **per image**
+
+You will never exhaust this space in a 12k-iteration run.
+
+So:
+- Geometric augmentation is still good for invariances,
+- but “duplicating files” on disk to increase dataset size is rarely the bottleneck in a patch-based setup.
+
+### Geometric transforms (flip/rot90): are they helpful?
+Yes, they usually help generalization and are already enabled.
+
+Potential caveat:
+- Real estate photos have a natural “up direction” (gravity). Rotating 90° creates unrealistic orientations.
+- But because you train on patches and low-level cues, it often still works well.
+
+If you see strange behavior, one knob is to disable `use_rot` (keep only horizontal flips).
+
+### Photometric transforms (“manipulated images”)
+This is where we need to be careful.
+
+There are two fundamentally different choices:
+
+1) **Apply photometric augmentation to both LQ and GT**
+   - Keeps pair relationship unchanged.
+   - Adds invariance to small global shifts.
+   - Does *not* teach correction (because GT moved too).
+
+2) **Apply photometric augmentation to LQ only**
+   - Changes the mapping task.
+   - Can improve robustness to varied exposure/WB/contrast.
+   - Can also conflict with your real data distribution if the synthetic changes are unrealistic.
+
+Given your failure mode (“contrast boost sometimes kills color”), the *most promising* photometric augmentation is:
+- very mild contrast/exposure jitter on LQ only, with low probability,
+so the model learns to correct when contrast changes.
+
+But: we should validate on your real failure samples first to pick ranges that are realistic.
+
+### How much “new images” vs “augmented images” should be in the mix?
+Recommendation:
+- Prioritize **real new pairs** (professionally edited targets) whenever possible.
+- Keep “synthetic manipulated” pairs as a **small regularizer**, not the bulk of training.
+
+If you do create synthetic variants, keep them to something like:
+- 80–90% real paired data
+- 10–20% synthetic-augmented LQ variants
+
+But ideally, do it on-the-fly (augmentation code) rather than duplicating on disk.
+
+---
+
+## 10) Post-training color evaluation (what to measure)
+
+To prevent “looks repainted” regressions, we should measure color fidelity *explicitly*.
+
+Recommended evaluation outputs:
+
+### A) Global metrics (baseline)
+- PSNR/SSIM (already in training)
+- Per-channel PSNR (R/G/B separately)
+
+### B) Color-fidelity metrics (new)
+Compute on full images:
+- ΔE summary statistics (mean, p95), ideally:
+  - ΔE76 (fast, simple), and/or
+  - ΔE00 / CIEDE2000 (more perceptual, but more complex; see Sharma et al. notes): http://www.ece.rochester.edu/~gsharma/ciede2000/ciede2000noteCRNA.pdf
+- Hue shift (degrees) on sufficiently saturated pixels
+- Saturation ratio (pred/gt) on sufficiently saturated pixels
+- Brightness ratio (HSV V) on sufficiently saturated pixels
+
+### C) “Stress-test” focus
+Maintain a small “color failure” set:
+- the exact images where you see repainting
+- tracked across checkpoints
+
+This is crucial because averages across a mostly-neutral dataset will hide the problem.
+
+---
+
+## 11) Open questions / clarifications (what I still need from you)
+
+You already answered/clarified some items; this list is the current “remaining unknowns”.
+
+### A) Provide examples (highest priority)
+Please provide ~5–15 cases of the failure mode:
+- LQ input
+- current model output
+- desired/GT (if available)
+and a short note describing what’s wrong (hue shift vs desaturation vs WB).
+
+### B) Dataset production details
+You said the “after” images were professionally edited, but details are unknown:
+- Are the files 8-bit sRGB JPEGs or 16-bit TIFFs?
+- Any ICC profiles embedded?
+- Were all images edited with one consistent preset/style, or multiple editors/styles?
+
+This matters because inconsistent color management can look like “model color drift” even when it’s data inconsistency.
+
+### C) How strict do we want to be with color temperature shifts?
+You said:
+- small shifts OK (WB/temperature),
+- big shifts not OK (repaint look).
+
+We should define a practical bound:
+- e.g., “for saturated wall regions, keep hue shift < X degrees and sat ratio within [Y, Z]”.
+
+### D) Are training-only dependencies acceptable?
+If we want LAB/MS-SSIM losses, we may add training-only libs.
+Confirm your preference:
+- OK to add deps (Kornia / pytorch-msssim), or
+- Prefer no new deps (YCbCr-only first).
+
+### E) Where do you want the “new val/test sets” to live?
+We can create:
+- `datasets/realestate/val_color/...` and `datasets/realestate/test/...`
+or keep them separate as `validation_images/` style folders.
+Confirm preference for naming/layout.
+
+---
+
+## 12) Immediate next steps (action checklist)
+
+1) You provide 5–15 failure examples (files + notes).
+2) We standardize paths/config for the current repo layout (remove `pix2pix-train-v1` references).
+3) We decide loss implementation approach:
+   - start with YCbCr chroma constraints (no new deps) vs LAB/MS-SSIM (new deps)
+4) We add a “color-stress val” set and a small “do-not-train” test set.
+5) We run a short fine-tune (+3k to +6k iters) from `net_g_12000.pth` with lower LR.
+6) We evaluate visually + with color metrics on the stress set; extend toward 20k if needed.
+
+
+
+---
+
+## 13) Validation of `re-train.plan` (what to keep vs what to change)
+
+This section validates the proposed plan in `re-train.plan` against (a) this repo’s actual training wiring and (b) standard practices from the referenced literature.
+
+### 13.1 Root cause analysis (keep, with one addition)
+Keep:
+- The core diagnosis (“RGB + VGG perceptual can still allow hue/saturation drift”) is directionally correct.
+- The “only some images” characterization is consistent with what we observed: the drift shows up on high-chroma regions and is washed out in global averages.
+
+Add:
+- **Dataset prior / style bias**: if many GT edits trend toward neutral interiors, the learned mapping will often “play it safe” and neutralize rare saturated paints.
+
+### 13.2 Checkpoint choice (adjust)
+`re-train.plan` suggests resuming from ~8k.
+
+What I recommend for your stated goal (“model is already good; fix occasional color failures”):
+- Default: fine-tune from `net_g_12000.pth` because it’s your best overall model today.
+- Consider 8k only if you empirically see 12k becoming “too committed” to the desaturation pattern (rare, but possible).
+
+### 13.3 “Add SSIM + LAB + chroma losses” (keep intent, fix implementation)
+Keep:
+- Adding a structural term (SSIM/MS-SSIM) and a targeted color term is well supported for restoration-style training.
+  - SSIM/MS-SSIM as optimization objectives are discussed in Zhao et al.: https://arxiv.org/abs/1511.08861
+  - Ready-to-use MS-SSIM(+L1) implementations exist (Kornia, `pytorch-msssim`):
+    - https://kornia.readthedocs.io/en/v0.6.7/_modules/kornia/losses/ms_ssim.html
+    - https://github.com/VainF/pytorch-msssim
+
+Fix:
+- The proposed YAML structure in `re-train.plan` (adding `ssim_opt`, `lab_color_opt`, `chroma_opt` alongside `pixel_opt`) will **not run** in this repo without code changes.
+  - Current trainer only instantiates `train.pixel_opt` and `train.perceptual_opt`: `nafnet-realestate/BasicSR/basicsr/models/image_restoration_model.py`
+  - Therefore, we must either:
+    1) implement a single composite `pixel_opt` loss (recommended first), or
+    2) modify the trainer to support multiple loss entries.
+
+Also important:
+- Treat **CIEDE2000 (ΔE00)** primarily as an *evaluation* metric at first.
+  - It’s computationally involved and easy to implement incorrectly, and has known discontinuities that complicate gradient-based optimization (Sharma et al.): http://www.ece.rochester.edu/~gsharma/ciede2000/ciede2000noteCRNA.pdf
+  - If we want a perceptual-Lab training objective initially, a simpler ΔE76-style (Euclidean in Lab) or “a/b-only L1” is a safer first step.
+
+### 13.4 Data strategy (keep, with augmentation cautions)
+Keep:
+- Adding 100–300 pairs is a good idea.
+- The *category focus* in `re-train.plan` (bold wall paints, mixed lighting, low-light corners) is correct.
+
+Caution:
+- Geometric augmentation is already strong and on-the-fly. Pre-generating flips/rotations on disk generally adds little value in a patch-based setup.
+- Photometric “manipulated images” should be conservative for paired “professional edit” targets:
+  - If used, apply mild exposure/contrast jitter **to LQ only** (low probability, small ranges), and validate against real failure samples.
+  - This aligns with broader restoration augmentation guidance (Yoo et al. analysis for SR): https://openaccess.thecvf.com/content_CVPR_2020/papers/Yoo_Rethinking_Data_Augmentation_for_Image_Super-resolution_A_Comprehensive_Analysis_and_CVPR_2020_paper.pdf
+
+### 13.5 Training config (keep LR reduction idea, fix resume semantics)
+Keep:
+- Lower LR for fine-tuning is the right direction.
+- Validating more frequently during a loss/objective change is good.
+
+Fix:
+- If you set `resume_state`, BasicSR restores optimizer+scheduler state and continues the old LR trajectory.
+  - That’s great for “continue the same objective”.
+  - It is often counterproductive when you introduce new loss terms (you inherit momentum/schedule tuned for the old objective).
+  - For “new color losses”, prefer: load `pretrain_network_g` weights and start a fresh optimizer/scheduler (i.e., no `resume_state`).
+
+### 13.6 Post-training color analysis (keep, expand mask-based reporting)
+Keep:
+- The proposed metrics (ΔE, hue shift, saturation ratio) are exactly the right direction.
+
+Expand:
+- Report metrics on the full image **and** on a “high-saturation mask” (because your problem is localized/rare and averages hide it).
+- Prefer robust summaries (p95/p99 ΔE, worst-k images) over only means.
+
+### 13.7 Roadmap (keep, add stress-set discipline)
+Keep:
+- The phase-based roadmap is good.
+
+Add:
+- Maintain a dedicated “color failure / stress” set that never goes into training until you’re satisfied you’re not overfitting to those cases.
+
+---
+
+## 14) Dependencies & “what point 6 incurs” (training losses + evaluation tooling)
+
+You asked what “dependencies for point 6” would incur. Interpreting “point 6” as the post-training color evaluation + any training-time color losses:
+
+### 14.1 No-new-deps training path (recommended first)
+If we implement color constraints in **YCbCr** using existing helpers in this repo, you typically need no new pip installs (just PyTorch).
+- Best for minimizing setup risk and iteration time.
+
+### 14.2 Training-only deps (optional, if we want more perceptual losses)
+If you want SSIM/MS-SSIM or differentiable Lab conversions without writing them yourself:
+- Kornia (MS-SSIM(+L1) loss reference): https://kornia.readthedocs.io/en/v0.6.7/_modules/kornia/losses/ms_ssim.html
+- `pytorch-msssim` (fast SSIM/MS-SSIM): https://github.com/VainF/pytorch-msssim
+
+These should be “training-only” dependencies; inference/export stays unchanged.
+
+### 14.3 Evaluation-only deps (optional, for verifying ΔE00 correctness)
+If we compute **CIEDE2000 (ΔE00)** for reporting:
+- You can implement it directly, but it’s easy to get wrong; Sharma et al. provide implementation pitfalls and supplemental tests: http://www.ece.rochester.edu/~gsharma/ciede2000/ciede2000noteCRNA.pdf
+- If you’d rather avoid implementing ΔE00 from scratch, you can use a third-party library for evaluation/validation (not required for training).
+
