@@ -214,7 +214,16 @@ nafnet-realestate/datasets/realestate/train/lq/
 nafnet-realestate/dataset_triptychs/
 nafnet-realestate/full_triptychs_fp32/
 nafnet-realestate/api_runs/
+nafnet-realestate/api_smoke_outputs/
 nafnet-realestate/s3_gallery/
+
+# Local clones / large artifacts (downloaded/generated)
+nafnet-realestate/BasicSR/
+nafnet-realestate/NAFNet/
+nafnet-realestate/pretrained/
+nafnet-realestate/mobile_models/*.onnx
+nafnet-realestate/mobile_models/*.onnx.*
+nafnet-realestate/nafnet_realestate_pipeline/meta/
 
 # Preview sweep artifacts (keep quadtych + metrics, ignore intermediate outputs)
 nafnet-realestate/preview_sweeps/**/inputs_lq/

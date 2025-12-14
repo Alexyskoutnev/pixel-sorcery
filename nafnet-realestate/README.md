@@ -46,6 +46,22 @@ python create_dataset_triptychs.py --backend torch --device cuda
 Outputs land in `nafnet-realestate/dataset_triptychs/onnx/<timestamp>/` (`metrics.csv`, `summary.json`, plus images).
 Outputs land in `nafnet-realestate/dataset_triptychs/<backend>/<timestamp>/` (`metrics.csv`, `summary.json`, plus images).
 
+## API Server (FastAPI)
+
+Run a warm, GPU-backed inference API with 3 tiers (`1024`, `2048`, `full`) and per-item timing/RAM tracing.
+
+```bash
+conda activate nafnet
+python api_server.py --host 127.0.0.1 --port 8000
+```
+
+Smoke test (starts server, submits 1 image, streams SSE events, downloads output):
+
+```bash
+conda activate nafnet
+bash smoke_test_api.sh --tier 1024 --image test_input/0000.jpg
+```
+
 ## Performance
 
 | Metric | Value |
