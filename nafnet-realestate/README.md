@@ -55,6 +55,8 @@ conda activate nafnet
 python api_server.py --host 127.0.0.1 --port 8000
 ```
 
+To use additional checkpoints, drop `.pth` / `.pt` files in `~/models` (or set `MODELS_DIRS`) and pick them via `model=` on `/v1/jobs` (see `GET /v1/models`).
+
 API docs:
 - Swagger UI: `http://127.0.0.1:8000/docs`
 - OpenAPI JSON: `http://127.0.0.1:8000/openapi.json`
