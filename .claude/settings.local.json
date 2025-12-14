@@ -3,7 +3,13 @@
     "allow": [
       "WebSearch",
       "WebFetch(domain:discuss.pytorch.org)",
-      "WebFetch(domain:github.com)"
+      "WebFetch(domain:github.com)",
+      "Bash(nvcc:*)",
+      "Bash(uv run python:*)",
+      "Bash(sudo apt-get update:*)",
+      "Bash(sudo apt-get:*)",
+      "Bash(export PATH=\"$HOME/.local/bin:$PATH\")",
+      "Bash(aws --version:*)"
     ]
   }
 }

@@ -79,13 +79,13 @@ def parse_args():
     parser.add_argument(
         "--base_channels",
         type=int,
-        default=64,
+        default=48,
         help="Base channel count for U-Net (doubles each level)",
     )
     parser.add_argument(
         "--depth",
         type=int,
-        default=5,
+        default=4,
         help="Number of encoder/decoder levels",
     )
     parser.add_argument(
@@ -97,7 +97,7 @@ def parse_args():
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=16,
+        default=4,
         help="Training batch size",
     )
     parser.add_argument(
@@ -174,7 +174,7 @@ def parse_args():
     parser.add_argument(
         "--save_every",
         type=int,
-        default=5,
+        default=2,
         help="Save checkpoint every N epochs",
     )
     parser.add_argument(

@@ -348,18 +348,21 @@ class GANTrainer:
         inputs = batch["input"][:num_samples].to(self.device)
         targets = batch["target"][:num_samples]
 
+        # Use actual batch size (might be smaller than num_samples)
+        actual_num_samples = inputs.shape[0]
+
         with torch.no_grad():
             outputs = self.generator(inputs).cpu()
         inputs = inputs.cpu()
 
-        fig, axes = plt.subplots(num_samples, 3, figsize=(12, 4 * num_samples))
+        fig, axes = plt.subplots(actual_num_samples, 3, figsize=(12, 4 * actual_num_samples))
 
-        for i in range(num_samples):
+        for i in range(actual_num_samples):
             for j, (img, title) in enumerate(zip(
                 [inputs[i], outputs[i], targets[i]],
                 ["Input", "Output (GAN)", "Target"]
             )):
-                ax = axes[i, j] if num_samples > 1 else axes[j]
+                ax = axes[i, j] if actual_num_samples > 1 else axes[j]
                 ax.imshow(img.permute(1, 2, 0).clamp(0, 1).numpy())
                 ax.axis("off")
                 if i == 0:

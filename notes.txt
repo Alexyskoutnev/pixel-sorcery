@@ -1,33 +1,592 @@
-python train.py \
-      --data_dir ./autohdr-real-estate-577/images \
-      --model unet_small \
-      --image_size 512 \
-      --batch_size 8 \
-      --epochs 20 \
-      --num_workers 0 \
-      --max_samples 100
+================================================================================
+PIXEL SORCERY - TRAINING & DEPLOYMENT NOTES
+================================================================================
 
-
- pkill -9 -f "train.py"
-
-
-nohup python train.py \
-      --data_dir autohdr-real-estate-577/images \
-      --model unet \
-      --image_size 1024 \
-      --batch_size 16 \
-      --depth 5 \
-      --epochs 100 \
-      --l1_weight 2.0 > training.log 2>&1 &
-
-# Training with a GAN 
-
-  nohup python train.py --data_dir autohdr-real-estate-577/images --loss gan --model unet --image_size 1024 --batch_size 8 --epochs 100 --l1_weight 2.0 > training.log 2>&1 &
-
-# Connecting to the DGX
+## HARDWARE ACCESS
+--------------------------------------------------------------------------------
+# Connect to DGX for faster training
 ssh -t 172.16.11.249
 
-## how to visulize the graph 
-netron model.onnx
+# Kill running training jobs
+pkill -9 -f "train.py"
 
- python scripts/export_onnx.py -c checkpoints_dgx/unet_512px_bs16_20251213_212353/best_model.pt
+
+## MOBILE-OPTIMIZED TRAINING (1024px - RECOMMENDED FOR ONNX DEPLOYMENT)
+================================================================================
+
+### Option 1: Mobile-Optimized UNet 1024px (RECOMMENDED)
+# Best for: High resolution, balanced quality/speed
+# Model size: ~15-20MB | Inference: ~150-250ms on mobile
+# Parameters: ~3-4M
+
+python train.py \
+    --data_dir autohdr-real-estate-577/images \
+    --model unet \
+    --image_size 1024 \
+    --batch_size 8 \
+    --base_channels 32 \
+    --depth 5 \
+    --epochs 100 \
+    --lr 1e-4 \
+    --l1_weight 2.0 \
+    --perceptual_weight 0.1 \
+    --ssim_weight 0.1 \
+    --save_every 10 \
+    --num_workers 4
+
+# Run in background (local/WSL2)
+nohup uv run python train.py \
+    --data_dir autohdr-real-estate-577/images \
+    --model unet \
+    --image_size 1024 \
+    --batch_size 8 \
+    --base_channels 32 \
+    --depth 5 \
+    --epochs 100 \
+    --lr 1e-4 \
+    --l1_weight 2.0 \
+    --perceptual_weight 0.1 \
+    --ssim_weight 0.1 \
+    --save_every 10 \
+    --num_workers 4 > training.log 2>&1 &
+
+# For DGX (higher batch size)
+nohup python train.py \
+    --data_dir autohdr-real-estate-577/images \
+    --model unet \
+    --image_size 1024 \
+    --batch_size 16 \
+    --base_channels 32 \
+    --depth 5 \
+    --epochs 100 \
+    --lr 1e-4 \
+    --l1_weight 2.0 \
+    --perceptual_weight 0.1 \
+    --ssim_weight 0.1 \
+    --save_every 10 \
+    --num_workers 8 > training.log 2>&1 &
+
+
+### Option 2: Mobile-Optimized UNet GAN 1024px (HIGHER QUALITY)
+# Best for: Maximum quality, sharper results
+# Model size: ~15-20MB | Inference: ~150-250ms on mobile
+# Parameters: ~3-4M (discriminator discarded after training)
+
+python train.py \
+    --data_dir autohdr-real-estate-577/images \
+    --loss gan \
+    --model unet \
+    --image_size 1024 \
+    --batch_size 4 \
+    --base_channels 32 \
+    --depth 4 \
+    --epochs 100 \
+    --lr 1e-4 \
+    --l1_weight 10.0 \
+    --perceptual_weight 2.0 \
+    --ssim_weight 1.0 \
+    --adv_weight 1.0 \
+    --discriminator patch_small \
+    --save_every 5 \
+    --num_workers 4
+
+# Run in background (local/WSL2)
+nohup uv run python train.py \
+    --data_dir autohdr-real-estate-577/images \
+    --loss gan \
+    --model unet \
+    --image_size 1024 \
+    --batch_size 4 \
+    --base_channels 32 \
+    --depth 4 \
+    --epochs 100 \
+    --lr 1e-4 \
+    --l1_weight 10.0 \
+    --perceptual_weight 5.0 \
+    --ssim_weight 1.0 \
+    --adv_weight 1.0 \
+    --discriminator patch_small \
+    --save_every 5 \
+    --num_workers 4 > training_gan.log 2>&1 &
+
+# For DGX (higher batch size)
+nohup python train.py \
+    --data_dir autohdr-real-estate-577/images \
+    --loss gan \
+    --model unet \
+    --image_size 1024 \
+    --batch_size 12 \
+    --base_channels 32 \
+    --depth 5 \
+    --epochs 100 \
+    --lr 1e-4 \
+    --l1_weight 100.0 \
+    --perceptual_weight 10.0 \
+    --ssim_weight 1.0 \
+    --adv_weight 1.0 \
+    --discriminator patch_small \
+    --save_every 10 \
+    --num_workers 8 > training_gan.log 2>&1 &
+
+
+### Option 2b: UNet GAN 512px (FAST TRAINING - 4-8x FASTER)
+# Best for: Quick iterations, testing hyperparameters
+# Training: ~6-12s per batch (vs ~50s at 1024px)
+# Note: Train at 512px, then fine-tune at 1024px for final model
+
+# Run in background (local/WSL2) - MUCH FASTER
+nohup uv run python train.py \
+    --data_dir autohdr-real-estate-577/images \
+    --loss gan \
+    --model unet \
+    --image_size 512 \
+    --batch_size 8 \
+    --base_channels 32 \
+    --depth 4 \
+    --epochs 100 \
+    --lr 1e-4 \
+    --l1_weight 10.0 \
+    --perceptual_weight 5.0 \
+    --ssim_weight 1.0 \
+    --adv_weight 1.0 \
+    --discriminator patch_small \
+    --save_every 5 \
+    --num_workers 4 > training_gan_512.log 2>&1 &
+
+### Option 2c: GAN 512px - TUNED FOR BETTER COLORS (RECOMMENDED)
+# Best for: Fixing washed out/desaturated colors
+# Lower L1 weight reduces pixel averaging (less desaturation)
+# Higher perceptual weight preserves color richness
+# Higher adversarial weight pushes for realistic, vibrant colors
+
+# Run in background (local/WSL2) - BETTER COLOR QUALITY
+nohup uv run python train.py \
+    --data_dir autohdr-real-estate-577/images \
+    --loss gan \
+    --model unet \
+    --image_size 512 \
+    --batch_size 8 \
+    --base_channels 32 \
+    --depth 4 \
+    --epochs 100 \
+    --lr 1e-4 \
+    --l1_weight 5.0 \
+    --perceptual_weight 10.0 \
+    --ssim_weight 1.0 \
+    --adv_weight 2.0 \
+    --discriminator patch_small \
+    --save_every 5 \
+    --num_workers 4 > training_gan_512_tuned.log 2>&1 &
+
+# If still washed out, try even stronger settings:
+# --l1_weight 2.0 --perceptual_weight 15.0 --adv_weight 3.0
+# See HYPERPARAMETER_TUNING.md for detailed guide
+
+
+### Option 3: Lightweight Model 1024px (FASTER MOBILE)
+# Best for: Faster inference, acceptable quality
+# Model size: ~8-12MB | Inference: ~100-150ms on mobile
+# Parameters: ~1.5-2M
+
+python train.py \
+    --data_dir autohdr-real-estate-577/images \
+    --model unet \
+    --image_size 1024 \
+    --batch_size 10 \
+    --base_channels 24 \
+    --depth 5 \
+    --epochs 100 \
+    --lr 1e-4 \
+    --l1_weight 2.0 \
+    --perceptual_weight 0.1 \
+    --ssim_weight 0.1 \
+    --save_every 10 \
+    --num_workers 4
+
+# Run in background (local/WSL2)
+nohup uv run python train.py \
+    --data_dir autohdr-real-estate-577/images \
+    --model unet \
+    --image_size 1024 \
+    --batch_size 10 \
+    --base_channels 24 \
+    --depth 5 \
+    --epochs 100 \
+    --lr 1e-4 \
+    --l1_weight 2.0 \
+    --perceptual_weight 0.1 \
+    --ssim_weight 0.1 \
+    --save_every 10 \
+    --num_workers 4 > training_lightweight.log 2>&1 &
+
+# For DGX (higher batch size)
+nohup python train.py \
+    --data_dir autohdr-real-estate-577/images \
+    --model unet \
+    --image_size 1024 \
+    --batch_size 20 \
+    --base_channels 24 \
+    --depth 5 \
+    --epochs 100 \
+    --lr 1e-4 \
+    --l1_weight 2.0 \
+    --perceptual_weight 0.1 \
+    --ssim_weight 0.1 \
+    --save_every 10 \
+    --num_workers 8 > training_lightweight.log 2>&1 &
+
+
+### Option 4: Standard Quality 1024px (DEFAULT)
+# Best for: Standard quality baseline
+# Model size: ~25-35MB | Inference: ~200-350ms on mobile
+# Parameters: ~7-8M
+
+python train.py \
+    --data_dir autohdr-real-estate-577/images \
+    --model unet \
+    --image_size 1024 \
+    --batch_size 6 \
+    --base_channels 48 \
+    --depth 5 \
+    --epochs 100 \
+    --lr 1e-4 \
+    --l1_weight 2.0 \
+    --perceptual_weight 0.1 \
+    --ssim_weight 0.1 \
+    --save_every 10 \
+    --num_workers 4
+
+# Run in background (local/WSL2)
+nohup uv run python train.py \
+    --data_dir autohdr-real-estate-577/images \
+    --model unet \
+    --image_size 1024 \
+    --batch_size 6 \
+    --base_channels 48 \
+    --depth 5 \
+    --epochs 100 \
+    --lr 1e-4 \
+    --l1_weight 2.0 \
+    --perceptual_weight 0.1 \
+    --ssim_weight 0.1 \
+    --save_every 10 \
+    --num_workers 4 > training_standard.log 2>&1 &
+
+# For DGX (higher batch size)
+nohup python train.py \
+    --data_dir autohdr-real-estate-577/images \
+    --model unet \
+    --image_size 1024 \
+    --batch_size 16 \
+    --base_channels 48 \
+    --depth 5 \
+    --epochs 100 \
+    --lr 1e-4 \
+    --l1_weight 2.0 \
+    --perceptual_weight 0.1 \
+    --ssim_weight 0.1 \
+    --save_every 10 \
+    --num_workers 8 > training_standard.log 2>&1 &
+
+
+## LEGACY/TEST CONFIGS
+================================================================================
+
+# Quick test run (small sample)
+python train.py \
+    --data_dir ./autohdr-real-estate-577/images \
+    --model unet \
+    --image_size 1024 \
+    --batch_size 4 \
+    --base_channels 32 \
+    --depth 5 \
+    --epochs 20 \
+    --num_workers 0 \
+    --max_samples 100
+
+# High quality (large model - NOT recommended for mobile)
+nohup uv run python train.py \
+    --data_dir autohdr-real-estate-577/images \
+    --model unet \
+    --image_size 1024 \
+    --batch_size 8 \
+    --base_channels 64 \
+    --depth 5 \
+    --epochs 100 \
+    --l1_weight 2.0 > training_large.log 2>&1 &
+
+
+## INFERENCE WITH PYTORCH (Testing Your Model)
+================================================================================
+
+### Single Image Inference
+# Test your trained model on a single image
+uv run python inference.py \
+    --checkpoint checkpoints/<run_name>/best_model.pt \
+    --input test_image.jpg \
+    --output enhanced_output.jpg
+
+# Test GAN model (works the same - script auto-detects GAN checkpoints)
+uv run python inference.py \
+    --checkpoint checkpoints/gan_unet_512px_bs8_<timestamp>/best_model.pt \
+    --input test_image.jpg \
+    --output enhanced_gan.jpg
+
+# Process at specific size (512px or 1024px)
+uv run python inference.py \
+    --checkpoint checkpoints/<run_name>/best_model.pt \
+    --input test_image.jpg \
+    --output enhanced.jpg \
+    --image_size 512
+
+### Batch Processing (Multiple Images)
+# Process an entire directory of images
+uv run python inference.py \
+    --checkpoint checkpoints/<run_name>/best_model.pt \
+    --input_dir test_images/ \
+    --output_dir enhanced_images/
+
+### Interactive Inference with Visualization
+# Uses matplotlib to show side-by-side comparison
+uv run python scripts/inference.py \
+    --image test_image.jpg \
+    --checkpoint checkpoints/<run_name>/best_model.pt \
+    --output enhanced.jpg \
+    --size 512
+
+
+## ONNX EXPORT FOR MOBILE (1024px)
+================================================================================
+
+### Export GAN Model to ONNX
+# The script automatically handles both GAN and regular models
+# For GAN models, it exports ONLY the generator (not discriminator)
+
+# Export 512px GAN model
+uv run python scripts/export_onnx.py \
+    -c checkpoints/gan_unet_512px_bs8_<timestamp>/best_model.pt \
+    -o bin/model_gan_512.onnx \
+    -s 512
+
+# Export 1024px GAN model
+uv run python scripts/export_onnx.py \
+    -c checkpoints/gan_unet_1024px_bs4_<timestamp>/best_model.pt \
+    -o bin/model_gan_1024.onnx \
+    -s 1024
+
+# Export regular (non-GAN) model
+uv run python scripts/export_onnx.py \
+    -c checkpoints/unet_1024px_bs8_<timestamp>/best_model.pt \
+    -o bin/model_mobile_1024.onnx \
+    -s 1024
+
+
+## TESTING ONNX MODELS
+================================================================================
+
+### Check ONNX Model Info
+# Display model size, opset, inputs/outputs, and metadata
+uv run python scripts/info_onnx.py --model bin/model_gan_512.onnx
+
+# Show detailed layer information
+uv run python scripts/info_onnx.py --model bin/model_gan_512.onnx --detailed
+
+### Benchmark ONNX Model Performance
+# Benchmark inference speed with 20 runs
+uv run python scripts/benchmark_onnx.py --model bin/model_gan_512.onnx --runs 20
+
+# More runs for better accuracy
+uv run python scripts/benchmark_onnx.py --model bin/model_gan_512.onnx --runs 50
+
+### Test ONNX Model on Real Images
+# Single image
+uv run python scripts/test_onnx.py \
+    --model bin/model_gan_512.onnx \
+    --input test_image.jpg \
+    --output test_onnx_output.jpg
+
+# Batch process a directory
+uv run python scripts/test_onnx.py \
+    --model bin/model_gan_512.onnx \
+    --input_dir test_images/ \
+    --output_dir onnx_outputs/
+
+# Process without resizing output back to original size
+uv run python scripts/test_onnx.py \
+    --model bin/model_gan_512.onnx \
+    --input test_image.jpg \
+    --no-resize
+
+### Compare PyTorch vs ONNX Output
+# Verify ONNX export correctness by comparing with PyTorch
+uv run python scripts/compare_pytorch_onnx.py \
+    --checkpoint checkpoints/gan_unet_512px_bs8_<timestamp>/best_model.pt \
+    --onnx bin/model_gan_512.onnx \
+    --image test_image.jpg
+
+# Custom tolerance and output directory
+uv run python scripts/compare_pytorch_onnx.py \
+    --checkpoint checkpoints/gan_unet_512px_bs8_<timestamp>/best_model.pt \
+    --onnx bin/model_gan_512.onnx \
+    --image test_image.jpg \
+    --tolerance 0.001 \
+    --output_dir comparison_results
+
+
+## MODEL QUANTIZATION (INT8 - 4x SMALLER, 2-4x FASTER)
+================================================================================
+
+### Quantize PyTorch Model (Easiest - No Calibration Needed)
+# Dynamic quantization: weights to INT8, ~4x smaller, 1.5-2x faster
+uv run python scripts/quantize_pytorch.py \
+    --checkpoint checkpoints/<run_name>/best_model.pt \
+    --output checkpoints/best_model_quantized.pt \
+    --method dynamic \
+    --benchmark
+
+### Quantize ONNX Model (Best for Mobile)
+# Dynamic quantization
+uv run python scripts/quantize_onnx.py \
+    --model bin/model_gan_512.onnx \
+    --output bin/model_gan_512_quantized.onnx \
+    --method dynamic \
+    --benchmark
+
+### Static Quantization (Best Quality - Requires Calibration)
+# PyTorch static quantization
+uv run python scripts/quantize_pytorch.py \
+    --checkpoint checkpoints/<run_name>/best_model.pt \
+    --output checkpoints/best_model_static_quantized.pt \
+    --method static \
+    --calib_images autohdr-real-estate-577/images/input \
+    --calib_samples 100 \
+    --image_size 512 \
+    --benchmark
+
+# ONNX static quantization
+uv run python scripts/quantize_onnx.py \
+    --model bin/model_gan_512.onnx \
+    --output bin/model_gan_512_static_quantized.onnx \
+    --method static \
+    --calib_images autohdr-real-estate-577/images/input \
+    --calib_samples 100 \
+    --image_size 512 \
+    --benchmark
+
+### Test Quantized Models
+# Test PyTorch quantized model
+uv run python inference.py \
+    --checkpoint checkpoints/best_model_quantized.pt \
+    --input test_image.jpg \
+    --output test_quantized_output.jpg
+
+# Test ONNX quantized model
+uv run python scripts/test_onnx.py \
+    --model bin/model_gan_512_quantized.onnx \
+    --input test_image.jpg \
+    --output test_quantized_output.jpg
+
+# See QUANTIZATION_GUIDE.md for detailed instructions
+
+
+## ONNX OPTIMIZATION FOR MOBILE (OPTIONAL - AFTER QUANTIZATION)
+================================================================================
+
+# Install optimizer if needed
+pip install onnxruntime onnxoptimizer
+
+# Optimize ONNX model (graph-level optimizations)
+uv run python -c "
+import onnx
+from onnxoptimizer import optimize
+
+model = onnx.load('bin/model_gan_512_quantized.onnx')
+optimized = optimize(model, [
+    'eliminate_nop_transpose',
+    'fuse_bn_into_conv',
+    'fuse_consecutive_squeezes',
+    'fuse_consecutive_transposes'
+])
+onnx.save(optimized, 'bin/model_gan_512_final.onnx')
+print('Optimized model saved!')
+print(f'Original size: {len(onnx.SerializeToString(model)) / 1024 / 1024:.2f} MB')
+print(f'Optimized size: {len(onnx.SerializeToString(optimized)) / 1024 / 1024:.2f} MB')
+"
+
+
+## VISUALIZATION & DEBUGGING
+================================================================================
+
+# Visualize ONNX model graph
+netron model_mobile_1024.onnx
+
+# Monitor training progress
+tail -f training.log
+
+# Check GPU usage (on DGX)
+watch -n 1 nvidia-smi
+
+# View checkpoints
+ls -lh checkpoints/<run_name>/
+
+# Test ONNX inference
+python -c "
+import onnxruntime as ort
+import numpy as np
+import time
+
+sess = ort.InferenceSession('model_mobile_1024.onnx')
+dummy_input = np.random.randn(1, 3, 1024, 1024).astype(np.float32)
+
+# Warmup
+for _ in range(5):
+    sess.run(None, {'input': dummy_input})
+
+# Benchmark
+times = []
+for _ in range(20):
+    start = time.time()
+    output = sess.run(None, {'input': dummy_input})
+    times.append(time.time() - start)
+
+print(f'Average inference time: {np.mean(times)*1000:.2f}ms')
+print(f'Min: {np.min(times)*1000:.2f}ms, Max: {np.max(times)*1000:.2f}ms')
+"
+
+
+## MODEL SIZE COMPARISON (1024px)
+================================================================================
+Option 1 (base=32, depth=5):      ~15-20MB  | ~3-4M params  | ~150-250ms mobile (RECOMMENDED)
+Option 2 (GAN, base=32, depth=5): ~15-20MB  | ~3-4M params  | ~150-250ms mobile (BEST QUALITY)
+Option 3 (base=24, depth=5):      ~8-12MB   | ~1.5-2M params| ~100-150ms mobile (FASTER)
+Option 4 (base=48, depth=5):      ~25-35MB  | ~7-8M params  | ~200-350ms mobile (STANDARD)
+
+Heavy (base=64, depth=5):         ~50-80MB  | ~30M params   | ~500ms+ mobile   (NOT RECOMMENDED)
+
+
+## BATCH SIZE RECOMMENDATIONS
+================================================================================
+Local/WSL2:
+  - Option 1: batch_size=8
+  - Option 2 (GAN): batch_size=6
+  - Option 3: batch_size=10
+  - Option 4: batch_size=6
+
+DGX:
+  - Option 1: batch_size=16-24
+  - Option 2 (GAN): batch_size=12-16
+  - Option 3: batch_size=20-32
+  - Option 4: batch_size=16-24
+
+
+## NOTES
+================================================================================
+- All configs use 1024px resolution as required
+- Option 1 (base_channels=32) recommended for best quality/speed balance
+- Option 2 (GAN) produces sharper results but trains slower
+- Option 3 (base_channels=24) best for older mobile devices
+- Always export to ONNX and optimize before mobile deployment
+- Test inference speed on target mobile devices before production
+- Consider quantization (INT8) to reduce model size by ~75%
+- Use uv run for better dependency management: uv run python train.py ...
+- For mobile apps, aim for <50MB model size and <300ms inference time
