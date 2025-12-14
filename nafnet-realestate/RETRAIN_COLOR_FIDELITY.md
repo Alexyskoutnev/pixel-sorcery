@@ -8,11 +8,15 @@ It’s intended to be a durable “single source of truth” so you can review/a
 
 ## 0) Tooling note (Exa MCP)
 
-In this Codex session, Exa MCP calls are failing with `Transport closed`, so this report is based on:
-- The local repo contents (configs, logs, code paths).
-- Local empirical checks on the saved validation visualizations.
+Exa research tooling is working now, and I used it to validate the loss/augmentation/evaluation recommendations against standard references in image restoration and color science.
 
-Your Exa API key **is** present in `~/.codex/config.toml`, but the MCP transport is still closed in this running session; in practice, this usually requires restarting Codex CLI (or reloading MCP servers) to re-establish the connection.
+Core sources referenced in this doc:
+- NAFNet paper (architecture background): https://arxiv.org/abs/2204.04676
+- “Loss Functions for Image Restoration with Neural Networks” (SSIM/MS-SSIM as loss, mixed objectives): https://arxiv.org/abs/1511.08861
+- CIEDE2000 implementation notes + pitfalls/discontinuities (important if we use ΔE00): http://www.ece.rochester.edu/~gsharma/ciede2000/ciede2000noteCRNA.pdf
+- Kornia MS-SSIM(+L1) loss reference implementation: https://kornia.readthedocs.io/en/v0.6.7/_modules/kornia/losses/ms_ssim.html
+- `pytorch-msssim` (fast differentiable SSIM/MS-SSIM): https://github.com/VainF/pytorch-msssim
+- Augmentation analysis for restoration tasks (useful guardrails, especially for paired supervision): https://openaccess.thecvf.com/content_CVPR_2020/papers/Yoo_Rethinking_Data_Augmentation_for_Image_Super-resolution_A_Comprehensive_Analysis_and_CVPR_2020_paper.pdf
 
 ---
 
@@ -501,7 +505,9 @@ Recommended evaluation outputs:
 
 ### B) Color-fidelity metrics (new)
 Compute on full images:
-- ΔE (in LAB) summary statistics (mean, p95)
+- ΔE summary statistics (mean, p95), ideally:
+  - ΔE76 (fast, simple), and/or
+  - ΔE00 / CIEDE2000 (more perceptual, but more complex; see Sharma et al. notes): http://www.ece.rochester.edu/~gsharma/ciede2000/ciede2000noteCRNA.pdf
 - Hue shift (degrees) on sufficiently saturated pixels
 - Saturation ratio (pred/gt) on sufficiently saturated pixels
 - Brightness ratio (HSV V) on sufficiently saturated pixels
@@ -565,3 +571,103 @@ Confirm preference for naming/layout.
 4) We add a “color-stress val” set and a small “do-not-train” test set.
 5) We run a short fine-tune (+3k to +6k iters) from `net_g_12000.pth` with lower LR.
 6) We evaluate visually + with color metrics on the stress set; extend toward 20k if needed.
+
+---
+
+## 13) Validation of `re-train.plan` (what to keep vs what to change)
+
+This section validates the proposed plan in `re-train.plan` against (a) this repo’s actual training wiring and (b) standard practices from the referenced literature.
+
+### 13.1 Root cause analysis (keep, with one addition)
+Keep:
+- The core diagnosis (“RGB + VGG perceptual can still allow hue/saturation drift”) is directionally correct.
+- The “only some images” characterization is consistent with what we observed: the drift shows up on high-chroma regions and is washed out in global averages.
+
+Add:
+- **Dataset prior / style bias**: if many GT edits trend toward neutral interiors, the learned mapping will often “play it safe” and neutralize rare saturated paints.
+
+### 13.2 Checkpoint choice (adjust)
+`re-train.plan` suggests resuming from ~8k.
+
+What I recommend for your stated goal (“model is already good; fix occasional color failures”):
+- Default: fine-tune from `net_g_12000.pth` because it’s your best overall model today.
+- Consider 8k only if you empirically see 12k becoming “too committed” to the desaturation pattern (rare, but possible).
+
+### 13.3 “Add SSIM + LAB + chroma losses” (keep intent, fix implementation)
+Keep:
+- Adding a structural term (SSIM/MS-SSIM) and a targeted color term is well supported for restoration-style training.
+  - SSIM/MS-SSIM as optimization objectives are discussed in Zhao et al.: https://arxiv.org/abs/1511.08861
+  - Ready-to-use MS-SSIM(+L1) implementations exist (Kornia, `pytorch-msssim`):
+    - https://kornia.readthedocs.io/en/v0.6.7/_modules/kornia/losses/ms_ssim.html
+    - https://github.com/VainF/pytorch-msssim
+
+Fix:
+- The proposed YAML structure in `re-train.plan` (adding `ssim_opt`, `lab_color_opt`, `chroma_opt` alongside `pixel_opt`) will **not run** in this repo without code changes.
+  - Current trainer only instantiates `train.pixel_opt` and `train.perceptual_opt`: `nafnet-realestate/BasicSR/basicsr/models/image_restoration_model.py`
+  - Therefore, we must either:
+    1) implement a single composite `pixel_opt` loss (recommended first), or
+    2) modify the trainer to support multiple loss entries.
+
+Also important:
+- Treat **CIEDE2000 (ΔE00)** primarily as an *evaluation* metric at first.
+  - It’s computationally involved and easy to implement incorrectly, and has known discontinuities that complicate gradient-based optimization (Sharma et al.): http://www.ece.rochester.edu/~gsharma/ciede2000/ciede2000noteCRNA.pdf
+  - If we want a perceptual-Lab training objective initially, a simpler ΔE76-style (Euclidean in Lab) or “a/b-only L1” is a safer first step.
+
+### 13.4 Data strategy (keep, with augmentation cautions)
+Keep:
+- Adding 100–300 pairs is a good idea.
+- The *category focus* in `re-train.plan` (bold wall paints, mixed lighting, low-light corners) is correct.
+
+Caution:
+- Geometric augmentation is already strong and on-the-fly. Pre-generating flips/rotations on disk generally adds little value in a patch-based setup.
+- Photometric “manipulated images” should be conservative for paired “professional edit” targets:
+  - If used, apply mild exposure/contrast jitter **to LQ only** (low probability, small ranges), and validate against real failure samples.
+  - This aligns with broader restoration augmentation guidance (Yoo et al. analysis for SR): https://openaccess.thecvf.com/content_CVPR_2020/papers/Yoo_Rethinking_Data_Augmentation_for_Image_Super-resolution_A_Comprehensive_Analysis_and_CVPR_2020_paper.pdf
+
+### 13.5 Training config (keep LR reduction idea, fix resume semantics)
+Keep:
+- Lower LR for fine-tuning is the right direction.
+- Validating more frequently during a loss/objective change is good.
+
+Fix:
+- If you set `resume_state`, BasicSR restores optimizer+scheduler state and continues the old LR trajectory.
+  - That’s great for “continue the same objective”.
+  - It is often counterproductive when you introduce new loss terms (you inherit momentum/schedule tuned for the old objective).
+  - For “new color losses”, prefer: load `pretrain_network_g` weights and start a fresh optimizer/scheduler (i.e., no `resume_state`).
+
+### 13.6 Post-training color analysis (keep, expand mask-based reporting)
+Keep:
+- The proposed metrics (ΔE, hue shift, saturation ratio) are exactly the right direction.
+
+Expand:
+- Report metrics on the full image **and** on a “high-saturation mask” (because your problem is localized/rare and averages hide it).
+- Prefer robust summaries (p95/p99 ΔE, worst-k images) over only means.
+
+### 13.7 Roadmap (keep, add stress-set discipline)
+Keep:
+- The phase-based roadmap is good.
+
+Add:
+- Maintain a dedicated “color failure / stress” set that never goes into training until you’re satisfied you’re not overfitting to those cases.
+
+---
+
+## 14) Dependencies & “what point 6 incurs” (training losses + evaluation tooling)
+
+You asked what “dependencies for point 6” would incur. Interpreting “point 6” as the post-training color evaluation + any training-time color losses:
+
+### 14.1 No-new-deps training path (recommended first)
+If we implement color constraints in **YCbCr** using existing helpers in this repo, you typically need no new pip installs (just PyTorch).
+- Best for minimizing setup risk and iteration time.
+
+### 14.2 Training-only deps (optional, if we want more perceptual losses)
+If you want SSIM/MS-SSIM or differentiable Lab conversions without writing them yourself:
+- Kornia (MS-SSIM(+L1) loss reference): https://kornia.readthedocs.io/en/v0.6.7/_modules/kornia/losses/ms_ssim.html
+- `pytorch-msssim` (fast SSIM/MS-SSIM): https://github.com/VainF/pytorch-msssim
+
+These should be “training-only” dependencies; inference/export stays unchanged.
+
+### 14.3 Evaluation-only deps (optional, for verifying ΔE00 correctness)
+If we compute **CIEDE2000 (ΔE00)** for reporting:
+- You can implement it directly, but it’s easy to get wrong; Sharma et al. provide implementation pitfalls and supplemental tests: http://www.ece.rochester.edu/~gsharma/ciede2000/ciede2000noteCRNA.pdf
+- If you’d rather avoid implementing ΔE00 from scratch, you can use a third-party library for evaluation/validation (not required for training).
